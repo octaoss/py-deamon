@@ -22,12 +22,15 @@ import {
   Radio,
   Download,
   Upload,
-  Settings
+  Settings,
+  Lock,
+  LogOut
 } from 'lucide-react'
 import type {
   Project,
   SystemStatus,
-  CFTunnelStatus
+  CFTunnelStatus,
+  AuthStatusResponse
 } from './types'
 
 export default function App() {
@@ -80,11 +83,104 @@ export default function App() {
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null)
 
+  const [authRequired, setAuthRequired] = useState<boolean>(false)
+  const [authenticated, setAuthenticated] = useState<boolean>(true)
+  const [authChecking, setAuthChecking] = useState<boolean>(true)
+  const [passwordInput, setPasswordInput] = useState<string>('')
+  const [loginError, setLoginError] = useState<string>('')
+  const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false)
+
+  const getAuthHeaders = (): Record<string, string> => {
+    const token = localStorage.getItem('pyd_token')
+    return token ? { Authorization: `Bearer ${token}` } : {}
+  }
+
+  const authFetch = async (input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> => {
+    const existingHeaders = (init.headers as Record<string, string>) || {}
+    const headers = {
+      ...getAuthHeaders(),
+      ...existingHeaders
+    }
+    const res = await fetch(input, { ...init, headers })
+    if (res.status === 401) {
+      localStorage.removeItem('pyd_token')
+      setAuthenticated(false)
+    }
+    return res
+  }
+
+  const checkAuthStatus = async () => {
+    try {
+      const res = await fetch('/api/auth/status', {
+        headers: getAuthHeaders()
+      })
+      if (res.ok) {
+        const data: AuthStatusResponse = await res.json()
+        setAuthRequired(data.auth_required)
+        setAuthenticated(data.authenticated)
+        return !data.auth_required || data.authenticated
+      }
+    } catch {
+    } finally {
+      setAuthChecking(false)
+    }
+    return false
+  }
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setLoginError('')
+    setIsLoggingIn(true)
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: passwordInput })
+      })
+      if (res.ok) {
+        const data = await res.json()
+        localStorage.setItem('pyd_token', data.token)
+        setAuthenticated(true)
+        setPasswordInput('')
+        fetchInitialData()
+      } else {
+        setLoginError('Invalid password. Please try again.')
+      }
+    } catch {
+      setLoginError('Failed to communicate with PyDaemon backend.')
+    } finally {
+      setIsLoggingIn(false)
+    }
+  }
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: getAuthHeaders()
+      })
+    } catch {
+    }
+    localStorage.removeItem('pyd_token')
+    setAuthenticated(false)
+  }
+
   useEffect(() => {
-    fetchInitialData()
-    const interval = setInterval(fetchProjects, 4000)
-    return () => clearInterval(interval)
+    const init = async () => {
+      const isAuthed = await checkAuthStatus()
+      if (isAuthed) {
+        fetchInitialData()
+      }
+    }
+    init()
   }, [])
+
+  useEffect(() => {
+    if (!authRequired || authenticated) {
+      const interval = setInterval(fetchProjects, 4000)
+      return () => clearInterval(interval)
+    }
+  }, [authRequired, authenticated])
 
   useEffect(() => {
     if (terminalEndRef.current) {
@@ -96,7 +192,11 @@ export default function App() {
     if (!selectedProject || selectedProject.source_type === 'tunnel') return
 
     fetchLogs(selectedProject.id)
-    const eventSource = new EventSource(`/api/projects/${selectedProject.id}/logs/stream`)
+    const token = localStorage.getItem('pyd_token')
+    const sseUrl = token
+      ? `/api/projects/${selectedProject.id}/logs/stream?token=${encodeURIComponent(token)}`
+      : `/api/projects/${selectedProject.id}/logs/stream`
+    const eventSource = new EventSource(sseUrl)
 
     eventSource.onmessage = (e) => {
       setProjectLogs((prev) => [...prev, e.data])
@@ -119,7 +219,7 @@ export default function App() {
 
   const fetchProjects = async () => {
     try {
-      const res = await fetch('/api/projects')
+      const res = await authFetch('/api/projects')
       if (res.ok) {
         const data = await res.json()
         setProjects(data)
@@ -130,7 +230,7 @@ export default function App() {
 
   const fetchSystemStatus = async () => {
     try {
-      const res = await fetch('/api/system/status')
+      const res = await authFetch('/api/system/status')
       if (res.ok) {
         const data = await res.json()
         setSystemStatus(data)
@@ -141,7 +241,7 @@ export default function App() {
 
   const fetchCFTunnel = async () => {
     try {
-      const res = await fetch('/api/cftunnel')
+      const res = await authFetch('/api/cftunnel')
       if (res.ok) {
         const data = await res.json()
         setCFStatus(data)
@@ -158,7 +258,7 @@ export default function App() {
 
   const fetchLogs = async (id: string) => {
     try {
-      const res = await fetch(`/api/projects/${id}/logs`)
+      const res = await authFetch(`/api/projects/${id}/logs`)
       if (res.ok) {
         const data = await res.json()
         setProjectLogs(data.logs || [])
@@ -200,7 +300,7 @@ export default function App() {
         formData.append('run_command', runCommand)
         formData.append('requirements_file', requirementsFile)
         formData.append('env_vars', JSON.stringify(envMap))
-        res = await fetch('/api/projects', {
+        res = await authFetch('/api/projects', {
           method: 'POST',
           body: formData,
         })
@@ -221,7 +321,7 @@ export default function App() {
         } else if (sourceType === 'tunnel') {
           payload.run_command = ''
         }
-        res = await fetch('/api/projects', {
+        res = await authFetch('/api/projects', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
@@ -304,7 +404,7 @@ export default function App() {
     }
 
     try {
-      const res = await fetch(`/api/projects/${editingProject.id}`, {
+      const res = await authFetch(`/api/projects/${editingProject.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -327,7 +427,7 @@ export default function App() {
   const handlePullGit = async (p: Project) => {
     setActionLoadingId(p.id)
     try {
-      const res = await fetch(`/api/projects/${p.id}/pull`, { method: 'POST' })
+      const res = await authFetch(`/api/projects/${p.id}/pull`, { method: 'POST' })
       if (res.ok) {
         await fetchProjects()
         setSelectedProject(p)
@@ -351,7 +451,7 @@ export default function App() {
     formData.append('file', newZipUploadFile)
 
     try {
-      const res = await fetch(`/api/projects/${updatingZipProject.id}/update-zip`, {
+      const res = await authFetch(`/api/projects/${updatingZipProject.id}/update-zip`, {
         method: 'POST',
         body: formData,
       })
@@ -374,17 +474,17 @@ export default function App() {
   }
 
   const handleStart = async (p: Project) => {
-    await fetch(`/api/projects/${p.id}/start`, { method: 'POST' })
+    await authFetch(`/api/projects/${p.id}/start`, { method: 'POST' })
     await fetchProjects()
   }
 
   const handleStop = async (p: Project) => {
-    await fetch(`/api/projects/${p.id}/stop`, { method: 'POST' })
+    await authFetch(`/api/projects/${p.id}/stop`, { method: 'POST' })
     await fetchProjects()
   }
 
   const handleRestart = async (p: Project) => {
-    await fetch(`/api/projects/${p.id}/restart`, { method: 'POST' })
+    await authFetch(`/api/projects/${p.id}/restart`, { method: 'POST' })
     await fetchProjects()
   }
 
@@ -392,7 +492,7 @@ export default function App() {
     if (!confirm(`Are you sure you want to delete project "${p.name}"?`)) {
       return
     }
-    await fetch(`/api/projects/${p.id}`, { method: 'DELETE' })
+    await authFetch(`/api/projects/${p.id}`, { method: 'DELETE' })
     if (selectedProject?.id === p.id) {
       setSelectedProject(null)
     }
@@ -404,7 +504,7 @@ export default function App() {
     setIsSavingCF(true)
 
     try {
-      const res = await fetch('/api/cftunnel', {
+      const res = await authFetch('/api/cftunnel', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -451,40 +551,104 @@ export default function App() {
     return `${m}m`
   }
 
+  if (authChecking) {
+    return (
+      <div className="login-wrapper">
+        <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Loading PyDaemon...</div>
+      </div>
+    )
+  }
+
+  if (authRequired && !authenticated) {
+    return (
+      <div className="login-wrapper">
+        <div className="login-card">
+          <div className="login-header">
+            <div className="login-icon-box">
+              <Lock size={20} />
+            </div>
+            <h1 className="login-title">PyDaemon</h1>
+            <p className="login-subtitle">Enter dashboard password to continue</p>
+          </div>
+
+          {loginError && <div className="login-error">{loginError}</div>}
+
+          <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <div className="form-group" style={{ margin: 0 }}>
+              <input
+                type="password"
+                placeholder="Enter password..."
+                value={passwordInput}
+                onChange={(e) => setPasswordInput(e.target.value)}
+                autoFocus
+                required
+              />
+            </div>
+            <button
+              type="submit"
+              className="btn-primary"
+              disabled={isLoggingIn}
+              style={{ width: '100%', justifyContent: 'center' }}
+            >
+              {isLoggingIn ? 'Unlocking...' : 'Unlock Dashboard'}
+            </button>
+          </form>
+        </div>
+        <footer className="footer-copyright" style={{ borderTop: 'none', marginTop: '2rem' }}>
+          <p>Copyright &copy; 2026 Yohanes Oktanio. All Rights Reserved.</p>
+        </footer>
+      </div>
+    )
+  }
+
   return (
-    <div className="container">
-      <header className="header">
-        <div className="brand">
-          <div className="logo-badge">▲</div>
-          <span className="brand-title">PyDaemon</span>
-          <span className="brand-badge">Python Hosting</span>
-        </div>
+    <div className="app-root">
+      <div className="container">
+        <header className="header">
+          <div className="brand">
+            <div className="logo-badge">▲</div>
+            <span className="brand-title">PyDaemon</span>
+            <span className="brand-badge">Python Hosting</span>
+          </div>
 
-        <div className="header-actions">
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={() => setIsCFModalOpen(true)}
-          >
-            <span className={`dot ${cfStatus?.domain ? 'dot-green' : 'dot-amber'}`} />
-            <span>
-              {cfStatus?.domain ? cfStatus.domain : 'Cloudflare API Setup'}
-            </span>
-          </button>
+          <div className="header-actions">
+            {authRequired && (
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={handleLogout}
+                title="Lock Dashboard"
+                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+              >
+                <LogOut size={14} />
+                <span>Lock</span>
+              </button>
+            )}
 
-          <button
-            type="button"
-            className="btn-primary"
-            onClick={() => {
-              resetNewForm()
-              setIsNewModalOpen(true)
-            }}
-          >
-            <Plus size={14} />
-            <span>New Project</span>
-          </button>
-        </div>
-      </header>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => setIsCFModalOpen(true)}
+            >
+              <span className={`dot ${cfStatus?.domain ? 'dot-green' : 'dot-amber'}`} />
+              <span>
+                {cfStatus?.domain ? cfStatus.domain : 'Cloudflare API Setup'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={() => {
+                resetNewForm()
+                setIsNewModalOpen(true)
+              }}
+            >
+              <Plus size={14} />
+              <span>New Project</span>
+            </button>
+          </div>
+        </header>
 
       {systemStatus && (
         <section className="overview-bar">
@@ -1316,6 +1480,10 @@ export default function App() {
           </div>
         </div>
       )}
+      </div>
+      <footer className="footer-copyright">
+        <p>Copyright &copy; 2026 Yohanes Oktanio. All Rights Reserved.</p>
+      </footer>
     </div>
   )
 }

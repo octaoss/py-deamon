@@ -8,20 +8,23 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
-	HTTPPort    int
-	HostDomain  string
-	BaseDir     string
-	AppsDir     string
-	DataDir     string
-	ServicesDir string
-	LogsDir     string
-	UVBinary    string
-	GitBinary   string
-	IsSystemd   bool
+	HTTPPort      int
+	HostDomain    string
+	BaseDir       string
+	AppsDir       string
+	DataDir       string
+	ServicesDir   string
+	LogsDir       string
+	UVBinary      string
+	GitBinary     string
+	IsSystemd     bool
+	AdminPassword string
 }
 
 func Load() *Config {
@@ -90,17 +93,26 @@ func Load() *Config {
 		isSystemd = true
 	}
 
+	adminPassword := os.Getenv("PYD_ADMIN_PASSWORD")
+	if adminPassword == "" {
+		passPath := filepath.Join(dataDir, "admin.pass")
+		if b, err := os.ReadFile(passPath); err == nil {
+			adminPassword = strings.TrimSpace(string(b))
+		}
+	}
+
 	return &Config{
-		HTTPPort:    httpPort,
-		HostDomain:  hostDomain,
-		BaseDir:     baseDir,
-		AppsDir:     appsDir,
-		DataDir:     dataDir,
-		ServicesDir: servicesDir,
-		LogsDir:     logsDir,
-		UVBinary:    uvBin,
-		GitBinary:   gitBin,
-		IsSystemd:   isSystemd,
+		HTTPPort:      httpPort,
+		HostDomain:    hostDomain,
+		BaseDir:       baseDir,
+		AppsDir:       appsDir,
+		DataDir:       dataDir,
+		ServicesDir:   servicesDir,
+		LogsDir:       logsDir,
+		UVBinary:      uvBin,
+		GitBinary:     gitBin,
+		IsSystemd:     isSystemd,
+		AdminPassword: adminPassword,
 	}
 }
 

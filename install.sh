@@ -2,13 +2,25 @@
 # Copyright (c) 2026 Yohanes Oktanio. All Rights Reserved.
 #
 # Production installer for Debian systems: installs git, astral-uv, cloudflared,
-# provisions /opt/pyd directory structure, builds PyDaemon runtime, and registers systemd service.
+# provisions /opt/pyd directory structure, builds PyDaemon runtime, configures
+# dashboard security password, and registers systemd service.
 
 set -e
 
+echo "=========================================================="
+echo "  PyDaemon Installer & Manager"
+echo "  Copyright (c) 2026 Yohanes Oktanio. All Rights Reserved."
+echo "=========================================================="
+
 if [ "$(id -u)" -ne 0 ]; then
-    echo "[!] Please run this installer with root privileges: sudo bash install.sh"
+    echo "[!] Please run this installer with root privileges: sudo bash install.sh [password]"
     exit 1
+fi
+
+ADMIN_PASSWORD="${1:-}"
+if [ -z "$ADMIN_PASSWORD" ] && [ -t 0 ]; then
+    read -r -s -p "[?] Enter dashboard admin password (leave empty to disable): " ADMIN_PASSWORD
+    echo ""
 fi
 
 echo "[*] Updating system packages and installing prerequisites..."
@@ -38,6 +50,19 @@ mkdir -p /opt/pyd/data
 mkdir -p /opt/pyd/logs
 mkdir -p /opt/pyd/services
 
+cat <<EOF > /opt/pyd/config.env
+PYD_PORT=8080
+PYD_ADMIN_PASSWORD="${ADMIN_PASSWORD}"
+EOF
+chmod 600 /opt/pyd/config.env
+
+if [ -n "$ADMIN_PASSWORD" ]; then
+    echo -n "$ADMIN_PASSWORD" > /opt/pyd/data/admin.pass
+    chmod 600 /opt/pyd/data/admin.pass
+else
+    rm -f /opt/pyd/data/admin.pass
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [ -f "$SCRIPT_DIR/services/pyd" ]; then
@@ -49,13 +74,15 @@ else
         (cd "$SCRIPT_DIR/webs" && npm install --legacy-peer-deps && npm run build)
     fi
     if command -v go >/dev/null 2>&1; then
-        (cd "$SCRIPT_DIR/services" && go build -o /opt/pyd/bin/pyd ./cmd/pyd)
+        (cd "$SCRIPT_DIR/services" && go build -ldflags="-s -w" -o /opt/pyd/bin/pyd ./cmd/pyd)
     else
         echo "[!] Go compiler not found. If distributing prebuilt binary, place it at $SCRIPT_DIR/services/pyd"
         exit 1
     fi
     chmod +x /opt/pyd/bin/pyd
 fi
+
+ln -sf /opt/pyd/bin/pyd /usr/local/bin/pyd
 
 if [ -f "$SCRIPT_DIR/daemon/py-daemon.service" ]; then
     cp "$SCRIPT_DIR/daemon/py-daemon.service" /etc/systemd/system/py-daemon.service
@@ -71,7 +98,13 @@ LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
 echo "=========================================================="
 echo "  PyDaemon Installed Successfully!"
 echo "  Dashboard URL: http://$LOCAL_IP:8080"
+if [ -n "$ADMIN_PASSWORD" ]; then
+    echo "  Dashboard Protection: Enabled (password set)"
+else
+    echo "  Dashboard Protection: Disabled (no password)"
+fi
 echo "  Cloudflare Tunnels: Available & Integrated"
 echo "  Astral UV Toolchain: Active"
 echo "  Service Status: systemctl status py-daemon"
+echo "  To uninstall: sudo bash uninstall.sh"
 echo "=========================================================="

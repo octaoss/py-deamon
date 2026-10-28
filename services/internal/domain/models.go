@@ -103,3 +103,17 @@ type InspectGitRequest struct {
 	URL    string `json:"url"`
 	Branch string `json:"branch,omitempty"`
 }
+
+type AuthStatusResponse struct {
+	AuthRequired  bool `json:"auth_required"`
+	Authenticated bool `json:"authenticated"`
+}
+
+type LoginRequest struct {
+	Password string `json:"password"`
+}
+
+type LoginResponse struct {
+	Token         string `json:"token"`
+	Authenticated bool   `json:"authenticated"`
+}

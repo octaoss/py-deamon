@@ -70,3 +70,8 @@ export interface CFTunnelStatus {
   logs: string[]
   installed: boolean
 }
+
+export interface AuthStatusResponse {
+  auth_required: boolean
+  authenticated: boolean
+}

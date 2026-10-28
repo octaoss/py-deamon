@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/octaoss/py-daemon/services/internal/cftunnel"
@@ -29,13 +30,15 @@ import (
 )
 
 type Server struct {
-	cfg       *config.Config
-	store     *store.Store
-	manager   *service.Manager
-	uvClient  *uv.Client
-	gitClient *git.Client
-	cfTunnel  *cftunnel.Manager
-	startTime time.Time
+	cfg        *config.Config
+	store      *store.Store
+	manager    *service.Manager
+	uvClient   *uv.Client
+	gitClient  *git.Client
+	cfTunnel   *cftunnel.Manager
+	startTime  time.Time
+	sessions   map[string]time.Time
+	sessionsMu sync.RWMutex
 }
 
 func NewServer(
@@ -46,7 +49,7 @@ func NewServer(
 	gitClient *git.Client,
 	cfTunnel *cftunnel.Manager,
 ) *Server {
-	return &Server{
+	srv := &Server{
 		cfg:       cfg,
 		store:     st,
 		manager:   mgr,
@@ -54,35 +57,189 @@ func NewServer(
 		gitClient: gitClient,
 		cfTunnel:  cfTunnel,
 		startTime: time.Now(),
+		sessions:  make(map[string]time.Time),
+	}
+	srv.loadSessions()
+	return srv
+}
+
+func (s *Server) sessionsFilePath() string {
+	return filepath.Join(s.cfg.DataDir, "sessions.json")
+}
+
+func (s *Server) loadSessions() {
+	filePath := s.sessionsFilePath()
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return
+	}
+	var stored map[string]time.Time
+	if err := json.Unmarshal(data, &stored); err == nil {
+		now := time.Now()
+		s.sessionsMu.Lock()
+		for k, v := range stored {
+			if v.After(now) {
+				s.sessions[k] = v
+			}
+		}
+		s.sessionsMu.Unlock()
+	}
+}
+
+func (s *Server) saveSessions() {
+	filePath := s.sessionsFilePath()
+	s.sessionsMu.RLock()
+	data, err := json.Marshal(s.sessions)
+	s.sessionsMu.RUnlock()
+	if err == nil {
+		_ = os.WriteFile(filePath, data, 0600)
+	}
+}
+
+func (s *Server) isAuthenticated(r *http.Request) bool {
+	if s.cfg.AdminPassword == "" {
+		return true
+	}
+	token := ""
+	authHeader := r.Header.Get("Authorization")
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		token = strings.TrimPrefix(authHeader, "Bearer ")
+	}
+	if token == "" {
+		if c, err := r.Cookie("pyd_session"); err == nil && c.Value != "" {
+			token = c.Value
+		}
+	}
+	if token == "" {
+		token = r.URL.Query().Get("token")
+	}
+	if token == "" {
+		return false
+	}
+	s.sessionsMu.RLock()
+	exp, exists := s.sessions[token]
+	s.sessionsMu.RUnlock()
+	if !exists || time.Now().After(exp) {
+		return false
+	}
+	return true
+}
+
+func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.isAuthenticated(r) {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		next(w, r)
 	}
 }
 
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
-	mux.HandleFunc("GET /api/system/status", s.handleSystemStatus)
-	mux.HandleFunc("GET /api/python/versions", s.handlePythonVersions)
+	mux.HandleFunc("GET /api/auth/status", s.handleAuthStatus)
+	mux.HandleFunc("POST /api/auth/login", s.handleAuthLogin)
+	mux.HandleFunc("POST /api/auth/logout", s.handleAuthLogout)
 
-	mux.HandleFunc("POST /api/projects/inspect-git", s.handleInspectGit)
-	mux.HandleFunc("POST /api/projects/inspect-zip", s.handleInspectZip)
+	mux.HandleFunc("GET /api/system/status", s.auth(s.handleSystemStatus))
+	mux.HandleFunc("GET /api/python/versions", s.auth(s.handlePythonVersions))
 
-	mux.HandleFunc("GET /api/projects", s.handleListProjects)
-	mux.HandleFunc("POST /api/projects", s.handleCreateProject)
-	mux.HandleFunc("GET /api/projects/{id}", s.handleGetProject)
-	mux.HandleFunc("PUT /api/projects/{id}", s.handleUpdateProject)
-	mux.HandleFunc("DELETE /api/projects/{id}", s.handleDeleteProject)
+	mux.HandleFunc("POST /api/projects/inspect-git", s.auth(s.handleInspectGit))
+	mux.HandleFunc("POST /api/projects/inspect-zip", s.auth(s.handleInspectZip))
 
-	mux.HandleFunc("POST /api/projects/{id}/start", s.handleStartProject)
-	mux.HandleFunc("POST /api/projects/{id}/stop", s.handleStopProject)
-	mux.HandleFunc("POST /api/projects/{id}/restart", s.handleRestartProject)
-	mux.HandleFunc("POST /api/projects/{id}/rebuild", s.handleRebuildProject)
-	mux.HandleFunc("POST /api/projects/{id}/pull", s.handlePullProject)
-	mux.HandleFunc("POST /api/projects/{id}/update-zip", s.handleUpdateZipProject)
+	mux.HandleFunc("GET /api/projects", s.auth(s.handleListProjects))
+	mux.HandleFunc("POST /api/projects", s.auth(s.handleCreateProject))
+	mux.HandleFunc("GET /api/projects/{id}", s.auth(s.handleGetProject))
+	mux.HandleFunc("PUT /api/projects/{id}", s.auth(s.handleUpdateProject))
+	mux.HandleFunc("DELETE /api/projects/{id}", s.auth(s.handleDeleteProject))
 
-	mux.HandleFunc("GET /api/projects/{id}/logs", s.handleGetLogs)
-	mux.HandleFunc("GET /api/projects/{id}/logs/stream", s.handleStreamLogs)
+	mux.HandleFunc("POST /api/projects/{id}/start", s.auth(s.handleStartProject))
+	mux.HandleFunc("POST /api/projects/{id}/stop", s.auth(s.handleStopProject))
+	mux.HandleFunc("POST /api/projects/{id}/restart", s.auth(s.handleRestartProject))
+	mux.HandleFunc("POST /api/projects/{id}/rebuild", s.auth(s.handleRebuildProject))
+	mux.HandleFunc("POST /api/projects/{id}/pull", s.auth(s.handlePullProject))
+	mux.HandleFunc("POST /api/projects/{id}/update-zip", s.auth(s.handleUpdateZipProject))
 
-	mux.HandleFunc("GET /api/cftunnel", s.handleGetCFTunnel)
-	mux.HandleFunc("POST /api/cftunnel", s.handleUpdateCFTunnel)
+	mux.HandleFunc("GET /api/projects/{id}/logs", s.auth(s.handleGetLogs))
+	mux.HandleFunc("GET /api/projects/{id}/logs/stream", s.auth(s.handleStreamLogs))
+
+	mux.HandleFunc("GET /api/cftunnel", s.auth(s.handleGetCFTunnel))
+	mux.HandleFunc("POST /api/cftunnel", s.auth(s.handleUpdateCFTunnel))
+}
+
+func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
+	required := s.cfg.AdminPassword != ""
+	authed := s.isAuthenticated(r)
+	writeJSON(w, http.StatusOK, domain.AuthStatusResponse{
+		AuthRequired:  required,
+		Authenticated: authed,
+	})
+}
+
+func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
+	var req domain.LoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid login request")
+		return
+	}
+
+	if s.cfg.AdminPassword != "" && req.Password != s.cfg.AdminPassword {
+		writeError(w, http.StatusUnauthorized, "invalid password")
+		return
+	}
+
+	token := generateRandomID(32)
+	exp := time.Now().Add(30 * 24 * time.Hour)
+
+	s.sessionsMu.Lock()
+	s.sessions[token] = exp
+	s.sessionsMu.Unlock()
+	s.saveSessions()
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "pyd_session",
+		Value:    token,
+		Path:     "/",
+		Expires:  exp,
+		MaxAge:   30 * 24 * 3600,
+		HttpOnly: false,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	writeJSON(w, http.StatusOK, domain.LoginResponse{
+		Token:         token,
+		Authenticated: true,
+	})
+}
+
+func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
+	token := ""
+	authHeader := r.Header.Get("Authorization")
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		token = strings.TrimPrefix(authHeader, "Bearer ")
+	}
+	if token == "" {
+		if c, err := r.Cookie("pyd_session"); err == nil {
+			token = c.Value
+		}
+	}
+	if token != "" {
+		s.sessionsMu.Lock()
+		delete(s.sessions, token)
+		s.sessionsMu.Unlock()
+		s.saveSessions()
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "pyd_session",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		Expires:  time.Unix(0, 0),
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	writeJSON(w, http.StatusOK, map[string]string{"message": "logged out"})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

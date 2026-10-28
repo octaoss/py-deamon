@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -29,7 +30,19 @@ import (
 )
 
 func main() {
+	var flagPort int
+	var flagPass string
+	flag.IntVar(&flagPort, "port", 0, "HTTP port")
+	flag.StringVar(&flagPass, "password", "", "Admin dashboard password")
+	flag.Parse()
+
 	cfg := config.Load()
+	if flagPort > 0 {
+		cfg.HTTPPort = flagPort
+	}
+	if flagPass != "" {
+		cfg.AdminPassword = flagPass
+	}
 
 	if err := cfg.EnsureDirectories(); err != nil {
 		log.Fatalf("failed to create runtime directories: %v", err)
