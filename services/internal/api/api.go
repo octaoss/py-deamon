@@ -370,7 +370,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		routes[proj.Subdomain] = proj.Port
 	}
 	_ = s.cfTunnel.SyncIngressConfig(routes)
-	_, _ = s.cfTunnel.RouteDNS(subdomain)
+	_ = s.cfTunnel.CreateCloudflareRoute(subdomain, port)
 
 	if hasSourceOrCommand {
 		go func() {
@@ -455,6 +455,7 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 
 	_ = s.manager.Remove(p)
 	_ = s.store.Delete(id)
+	_ = s.cfTunnel.DeleteCloudflareRoute(p.Subdomain)
 
 	routes := make(map[string]int)
 	for _, proj := range s.store.GetAll() {
@@ -629,24 +630,29 @@ func (s *Server) handleStreamLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetCFTunnel(w http.ResponseWriter, r *http.Request) {
-	running, token, domainStr, tunnelName, active, logs := s.cfTunnel.GetStatus()
+	running, token, domainStr, tunnelID, apiToken, accountID, active, logs := s.cfTunnel.GetStatus()
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"running":     running,
-		"token":       token,
-		"domain":      domainStr,
-		"tunnel_name": tunnelName,
-		"active":      active,
-		"logs":        logs,
-		"installed":   s.cfTunnel.IsInstalled(),
+		"running":    running,
+		"token":      token,
+		"domain":     domainStr,
+		"tunnel_id":  tunnelID,
+		"api_token":  apiToken,
+		"account_id": accountID,
+		"active":     active,
+		"logs":       logs,
+		"installed":  s.cfTunnel.IsInstalled(),
 	})
 }
 
 func (s *Server) handleUpdateCFTunnel(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		Token      string `json:"token"`
-		Domain     string `json:"domain"`
-		TunnelName string `json:"tunnel_name"`
-		Active     bool   `json:"active"`
+		APIToken  string `json:"api_token"`
+		AccountID string `json:"account_id"`
+		TunnelID  string `json:"tunnel_id"`
+		ZoneID    string `json:"zone_id"`
+		Domain    string `json:"domain"`
+		Token     string `json:"token"`
+		Active    bool   `json:"active"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -654,7 +660,7 @@ func (s *Server) handleUpdateCFTunnel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.cfTunnel.UpdateConfig(payload.Token, payload.Domain, payload.TunnelName, payload.Active); err != nil {
+	if err := s.cfTunnel.UpdateConfig(payload.APIToken, payload.AccountID, payload.TunnelID, payload.ZoneID, payload.Domain, payload.Token, payload.Active); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

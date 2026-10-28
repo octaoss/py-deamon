@@ -11,7 +11,7 @@ export interface Project {
   name: string
   subdomain: string
   port: number
-  source_type: 'git' | 'zip'
+  source_type: 'git' | 'zip' | 'tunnel'
   git_url?: string
   git_branch?: string
   python_version: string
@@ -63,7 +63,9 @@ export interface CFTunnelStatus {
   running: boolean
   token: string
   domain: string
-  tunnel_name?: string
+  tunnel_id?: string
+  api_token?: string
+  account_id?: string
   active: boolean
   logs: string[]
   installed: boolean
