@@ -365,6 +365,13 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	routes := make(map[string]int)
+	for _, proj := range s.store.GetAll() {
+		routes[proj.Subdomain] = proj.Port
+	}
+	_ = s.cfTunnel.SyncIngressConfig(routes)
+	_, _ = s.cfTunnel.RouteDNS(subdomain)
+
 	if hasSourceOrCommand {
 		go func() {
 			projectDir := filepath.Join(s.cfg.AppsDir, p.ID)
@@ -448,6 +455,12 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 
 	_ = s.manager.Remove(p)
 	_ = s.store.Delete(id)
+
+	routes := make(map[string]int)
+	for _, proj := range s.store.GetAll() {
+		routes[proj.Subdomain] = proj.Port
+	}
+	_ = s.cfTunnel.SyncIngressConfig(routes)
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": "project deleted"})
 }
@@ -616,22 +629,24 @@ func (s *Server) handleStreamLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetCFTunnel(w http.ResponseWriter, r *http.Request) {
-	running, token, domainStr, active, logs := s.cfTunnel.GetStatus()
+	running, token, domainStr, tunnelName, active, logs := s.cfTunnel.GetStatus()
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"running":   running,
-		"token":     token,
-		"domain":    domainStr,
-		"active":    active,
-		"logs":      logs,
-		"installed": s.cfTunnel.IsInstalled(),
+		"running":     running,
+		"token":       token,
+		"domain":      domainStr,
+		"tunnel_name": tunnelName,
+		"active":      active,
+		"logs":        logs,
+		"installed":   s.cfTunnel.IsInstalled(),
 	})
 }
 
 func (s *Server) handleUpdateCFTunnel(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		Token  string `json:"token"`
-		Domain string `json:"domain"`
-		Active bool   `json:"active"`
+		Token      string `json:"token"`
+		Domain     string `json:"domain"`
+		TunnelName string `json:"tunnel_name"`
+		Active     bool   `json:"active"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -639,10 +654,16 @@ func (s *Server) handleUpdateCFTunnel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.cfTunnel.UpdateConfig(payload.Token, payload.Domain, payload.Active); err != nil {
+	if err := s.cfTunnel.UpdateConfig(payload.Token, payload.Domain, payload.TunnelName, payload.Active); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	routes := make(map[string]int)
+	for _, p := range s.store.GetAll() {
+		routes[p.Subdomain] = p.Port
+	}
+	_ = s.cfTunnel.SyncIngressConfig(routes)
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": "cloudflare tunnel settings updated"})
 }

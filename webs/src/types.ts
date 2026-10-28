@@ -63,6 +63,7 @@ export interface CFTunnelStatus {
   running: boolean
   token: string
   domain: string
+  tunnel_name?: string
   active: boolean
   logs: string[]
   installed: boolean

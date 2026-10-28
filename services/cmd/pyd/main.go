@@ -44,7 +44,7 @@ func main() {
 	gitClient := git.NewClient(cfg.GitBinary)
 	cfMgr := cftunnel.NewManager("", cfg.DataDir)
 
-	running, _, _, active, _ := cfMgr.GetStatus()
+	running, _, _, _, active, _ := cfMgr.GetStatus()
 	if active && !running {
 		_ = cfMgr.Start()
 	}

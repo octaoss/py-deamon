@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2026 Yohanes Oktanio. All Rights Reserved.
  *
- * Cloudflare Tunnel lifecycle supervisor, credential management, and tunnel log telemetry.
+ * Cloudflare Tunnel lifecycle supervisor, DNS route registration, and ingress configuration.
  */
 
 package cftunnel
@@ -14,15 +14,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 )
 
 type Settings struct {
-	Token  string `json:"token"`
-	Domain string `json:"domain"`
-	Active bool   `json:"active"`
+	Token      string `json:"token"`
+	Domain     string `json:"domain"`
+	TunnelName string `json:"tunnel_name"`
+	Active     bool   `json:"active"`
 }
 
 type Manager struct {
@@ -85,12 +87,13 @@ func (m *Manager) saveSettings() error {
 	return os.WriteFile(filePath, data, 0644)
 }
 
-func (m *Manager) UpdateConfig(token, domain string, enable bool) error {
+func (m *Manager) UpdateConfig(token, domain, tunnelName string, enable bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.settings.Token = token
-	m.settings.Domain = domain
+	m.settings.Token = strings.TrimSpace(token)
+	m.settings.Domain = strings.TrimSpace(domain)
+	m.settings.TunnelName = strings.TrimSpace(tunnelName)
 	m.settings.Active = enable
 
 	if err := m.saveSettings(); err != nil {
@@ -101,7 +104,7 @@ func (m *Manager) UpdateConfig(token, domain string, enable bool) error {
 		_ = m.stopInternal()
 	}
 
-	if enable && token != "" {
+	if enable && m.settings.Token != "" {
 		return m.startInternal()
 	}
 
@@ -201,6 +204,52 @@ func (m *Manager) stopInternal() error {
 	return nil
 }
 
+func (m *Manager) RouteDNS(subdomain string) (string, error) {
+	m.mu.Lock()
+	tunnel := m.settings.TunnelName
+	domain := m.settings.Domain
+	m.mu.Unlock()
+
+	if tunnel == "" || domain == "" {
+		return "", nil
+	}
+
+	hostname := fmt.Sprintf("%s.%s", subdomain, domain)
+	cmd := exec.Command(m.binaryPath, "tunnel", "route", "dns", "-f", tunnel, hostname)
+	out, err := cmd.CombinedOutput()
+	result := string(out)
+
+	logEntry := fmt.Sprintf("[%s] Route DNS (%s -> %s): %s", time.Now().Format(time.RFC3339), hostname, tunnel, strings.TrimSpace(result))
+	m.appendLog(logEntry)
+
+	return result, err
+}
+
+func (m *Manager) SyncIngressConfig(routes map[string]int) error {
+	m.mu.Lock()
+	domain := m.settings.Domain
+	tunnel := m.settings.TunnelName
+	m.mu.Unlock()
+
+	if domain == "" {
+		domain = "example.com"
+	}
+
+	var sb strings.Builder
+	if tunnel != "" {
+		sb.WriteString(fmt.Sprintf("tunnel: %s\n", tunnel))
+	}
+	sb.WriteString("ingress:\n")
+
+	for sub, port := range routes {
+		sb.WriteString(fmt.Sprintf("  - hostname: %s.%s\n    service: http://localhost:%d\n", sub, domain, port))
+	}
+	sb.WriteString("  - service: http_status:404\n")
+
+	filePath := filepath.Join(m.dataDir, "cf_ingress.yml")
+	return os.WriteFile(filePath, []byte(sb.String()), 0644)
+}
+
 func (m *Manager) appendLog(entry string) {
 	m.logMu.Lock()
 	defer m.logMu.Unlock()
@@ -211,11 +260,12 @@ func (m *Manager) appendLog(entry string) {
 	m.logs = append(m.logs, entry)
 }
 
-func (m *Manager) GetStatus() (bool, string, string, bool, []string) {
+func (m *Manager) GetStatus() (bool, string, string, string, bool, []string) {
 	m.mu.Lock()
 	running := m.running
 	token := m.settings.Token
 	domain := m.settings.Domain
+	tunnelName := m.settings.TunnelName
 	active := m.settings.Active
 	m.mu.Unlock()
 
@@ -224,11 +274,17 @@ func (m *Manager) GetStatus() (bool, string, string, bool, []string) {
 	copy(copiedLogs, m.logs)
 	m.logMu.RUnlock()
 
-	return running, token, domain, active, copiedLogs
+	return running, token, domain, tunnelName, active, copiedLogs
 }
 
 func (m *Manager) GetDomain() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.settings.Domain
+}
+
+func (m *Manager) GetTunnelName() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.settings.TunnelName
 }
