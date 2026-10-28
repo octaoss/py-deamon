@@ -319,23 +319,22 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		pyVer = "3.12"
 	}
 
-	runCmd := req.RunCommand
-	if runCmd == "" {
-		runCmd = "python main.py"
-	}
-
-	reqFile := req.RequirementsFile
-	if reqFile == "" {
-		reqFile = "requirements.txt"
-	}
-
 	srcType := req.SourceType
 	if srcType == "" {
 		if req.GitURL != "" {
 			srcType = "git"
-		} else {
+		} else if tempDir != "" {
 			srcType = "zip"
+		} else {
+			srcType = "tunnel"
 		}
+	}
+
+	hasSourceOrCommand := req.RunCommand != "" || req.GitURL != "" || tempDir != ""
+
+	initialStatus := domain.StatusRunning
+	if hasSourceOrCommand {
+		initialStatus = domain.StatusBuilding
 	}
 
 	p := &domain.Project{
@@ -348,10 +347,10 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		GitBranch:        req.GitBranch,
 		PythonVersion:    pyVer,
 		Entrypoint:       req.Entrypoint,
-		RunCommand:       runCmd,
-		RequirementsFile: reqFile,
+		RunCommand:       req.RunCommand,
+		RequirementsFile: req.RequirementsFile,
 		EnvVars:          req.EnvVars,
-		Status:           domain.StatusBuilding,
+		Status:           initialStatus,
 		AutoRestart:      true,
 		CreatedAt:        time.Now(),
 		UpdatedAt:        time.Now(),
@@ -366,27 +365,29 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go func() {
-		projectDir := filepath.Join(s.cfg.AppsDir, p.ID)
-		logsDir := filepath.Join(projectDir, "logs")
-		_ = os.MkdirAll(logsDir, 0755)
-		logFile, _ := os.OpenFile(filepath.Join(logsDir, "app.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-		var writer io.Writer = os.Stdout
-		if logFile != nil {
-			writer = io.MultiWriter(os.Stdout, logFile)
-			defer logFile.Close()
-		}
+	if hasSourceOrCommand {
+		go func() {
+			projectDir := filepath.Join(s.cfg.AppsDir, p.ID)
+			logsDir := filepath.Join(projectDir, "logs")
+			_ = os.MkdirAll(logsDir, 0755)
+			logFile, _ := os.OpenFile(filepath.Join(logsDir, "app.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+			var writer io.Writer = os.Stdout
+			if logFile != nil {
+				writer = io.MultiWriter(os.Stdout, logFile)
+				defer logFile.Close()
+			}
 
-		err := s.manager.Deploy(p, tempDir, writer)
-		if err != nil {
-			p.Status = domain.StatusFailed
-			p.ErrorMessage = err.Error()
-		} else {
-			p.Status = domain.StatusRunning
-			p.ErrorMessage = ""
-		}
-		_ = s.store.Update(p)
-	}()
+			err := s.manager.Deploy(p, tempDir, writer)
+			if err != nil {
+				p.Status = domain.StatusFailed
+				p.ErrorMessage = err.Error()
+			} else {
+				p.Status = domain.StatusRunning
+				p.ErrorMessage = ""
+			}
+			_ = s.store.Update(p)
+		}()
+	}
 
 	writeJSON(w, http.StatusCreated, p)
 }

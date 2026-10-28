@@ -59,7 +59,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	subdomain := r.extractSubdomain(req.Host)
-	if subdomain != "" && subdomain != "www" && subdomain != "admin" && subdomain != "api" {
+	if subdomain != "" && subdomain != "www" && subdomain != "admin" {
 		if p, found := r.store.GetBySubdomain(subdomain); found {
 			r.proxyToPort(w, req, p.Port)
 			return
@@ -75,20 +75,33 @@ func (r *Router) extractSubdomain(hostHeader string) string {
 		host = host[:colonIdx]
 	}
 
-	domainsToTest := []string{r.hostDomain, "localhost"}
-	if cfDomain := r.cfTunnel.GetDomain(); cfDomain != "" {
-		domainsToTest = append(domainsToTest, cfDomain)
-	}
-
-	for _, d := range domainsToTest {
-		if d == "" {
-			continue
-		}
-		suffix := "." + d
+	cfDomain := r.cfTunnel.GetDomain()
+	if cfDomain != "" {
+		suffix := "." + cfDomain
 		if strings.HasSuffix(host, suffix) {
 			sub := strings.TrimSuffix(host, suffix)
 			if !strings.Contains(sub, ".") && sub != "" {
 				return sub
+			}
+		}
+	}
+
+	if r.hostDomain != "" && r.hostDomain != "localhost" {
+		suffix := "." + r.hostDomain
+		if strings.HasSuffix(host, suffix) {
+			sub := strings.TrimSuffix(host, suffix)
+			if !strings.Contains(sub, ".") && sub != "" {
+				return sub
+			}
+		}
+	}
+
+	parts := strings.Split(host, ".")
+	if len(parts) >= 2 {
+		candidate := parts[0]
+		if candidate != "www" && candidate != "admin" {
+			if _, found := r.store.GetBySubdomain(candidate); found {
+				return candidate
 			}
 		}
 	}
@@ -121,7 +134,7 @@ func (r *Router) proxyToPort(w http.ResponseWriter, req *http.Request, port int)
 		newProxy.ErrorHandler = func(rw http.ResponseWriter, r *http.Request, err error) {
 			rw.Header().Set("Content-Type", "text/html; charset=utf-8")
 			rw.WriteHeader(http.StatusBadGateway)
-			_, _ = fmt.Fprintf(rw, `<!DOCTYPE html><html><head><title>502 Bad Gateway - PyDaemon</title><style>body{background:#0a0a0a;color:#ededed;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}div{text-align:center;padding:2rem;border:1px solid #333;border-radius:12px;background:#141414;}h1{font-size:2.5rem;margin:0 0 1rem;color:#f87171;}p{color:#888;margin:0;}</style></head><body><div><h1>502 Bad Gateway</h1><p>PyDaemon application is starting up or unavailable on port %d.</p></div></body></html>`, port)
+			_, _ = fmt.Fprintf(rw, `<!DOCTYPE html><html><head><title>502 Bad Gateway - PyDaemon</title><style>body{background:#0a0a0a;color:#ededed;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}div{text-align:center;padding:2rem;border:1px solid #333;border-radius:12px;background:#141414;}h1{font-size:2rem;margin:0 0 1rem;color:#f87171;}p{color:#888;margin:0;}</style></head><body><div><h1>502 Bad Gateway</h1><p>Local service is unreachable on localhost:%d</p></div></body></html>`, port)
 		}
 
 		r.proxiesMu.Lock()

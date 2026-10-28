@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2026 Yohanes Oktanio. All Rights Reserved.
  *
- * Embedded frontend web assets and single-page application fallback file server.
+ * Embedded frontend web assets and single-page application fallback file server with cache control headers.
  */
 
 package web
@@ -33,9 +33,18 @@ func Handler() http.Handler {
 			path = "index.html"
 		}
 
+		if path == "index.html" || !strings.Contains(path, ".") {
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			w.Header().Set("Pragma", "no-cache")
+			w.Header().Set("Expires", "0")
+		} else if strings.HasPrefix(path, "assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		}
+
 		f, err := subFS.Open(path)
 		if err != nil {
 			if os.IsNotExist(err) || strings.Contains(err.Error(), "does not exist") {
+				w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 				r.URL.Path = "/"
 				fileServer.ServeHTTP(w, r)
 				return
