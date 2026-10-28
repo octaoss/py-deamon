@@ -60,9 +60,12 @@ func (m *Manager) Deploy(p *domain.Project, tempSourceDir string, logWriter io.W
 		}
 	} else if p.SourceType == "git" && p.GitURL != "" {
 		_ = os.RemoveAll(sourceDir)
+		_, _ = fmt.Fprintf(logWriter, "Cloning git repository %s...\n", p.GitURL)
 		if err := m.gitClient.Clone(p.GitURL, p.GitBranch, sourceDir, logWriter); err != nil {
+			_, _ = fmt.Fprintf(logWriter, "Git clone error: %v\n", err)
 			return fmt.Errorf("git clone failed: %w", err)
 		}
+		_, _ = fmt.Fprintln(logWriter, "Git repository cloned successfully.")
 	}
 
 	if err := m.writeEnvFile(projectDir, p.EnvVars, p.Port); err != nil {

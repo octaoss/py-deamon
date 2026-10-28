@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2026 Yohanes Oktanio. All Rights Reserved.
  *
- * Main dashboard application with project management, deployment wizard, and Cloudflare Tunnel controls.
+ * Main dashboard application with direct project deployment and Cloudflare Tunnel controls.
  */
 
 import React, { useState, useEffect, useRef } from 'react'
@@ -26,8 +26,7 @@ import {
 import type {
   Project,
   SystemStatus,
-  CFTunnelStatus,
-  ProjectInspection
+  CFTunnelStatus
 } from './types'
 
 export default function App() {
@@ -40,18 +39,15 @@ export default function App() {
   const [isCFModalOpen, setIsCFModalOpen] = useState<boolean>(false)
   const [selectedProject, setSelectedProject] = useState<Project | null>(null)
 
-  const [inspectSourceType, setInspectSourceType] = useState<'git' | 'zip'>('git')
+  const [sourceType, setSourceType] = useState<'git' | 'zip'>('git')
   const [gitURL, setGitURL] = useState<string>('')
   const [gitBranch, setGitBranch] = useState<string>('')
   const [zipFile, setZipFile] = useState<File | null>(null)
-  const [isInspecting, setIsInspecting] = useState<boolean>(false)
-  const [inspection, setInspection] = useState<ProjectInspection | null>(null)
 
   const [projectName, setProjectName] = useState<string>('')
   const [projectSubdomain, setProjectSubdomain] = useState<string>('')
   const [projectPythonVersion, setProjectPythonVersion] = useState<string>('3.12')
-  const [projectEntrypoint, setProjectEntrypoint] = useState<string>('')
-  const [projectRunCommand, setProjectRunCommand] = useState<string>('')
+  const [projectRunCommand, setProjectRunCommand] = useState<string>('python main.py')
   const [projectRequirements, setProjectRequirements] = useState<string>('requirements.txt')
   const [projectEnvVars, setProjectEnvVars] = useState<Array<{ key: string; value: string }>>([])
   const [isDeploying, setIsDeploying] = useState<boolean>(false)
@@ -148,57 +144,26 @@ export default function App() {
     }
   }
 
-  const handleInspect = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setIsInspecting(true)
-
-    try {
-      let res: Response
-      if (inspectSourceType === 'git') {
-        res = await fetch('/api/projects/inspect-git', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: gitURL, branch: gitBranch }),
-        })
-      } else {
-        if (!zipFile) {
-          alert('Please select a ZIP file to upload.')
-          setIsInspecting(false)
-          return
-        }
-        const formData = new FormData()
-        formData.append('file', zipFile)
-        res = await fetch('/api/projects/inspect-zip', {
-          method: 'POST',
-          body: formData,
-        })
+  const handleGitURLChange = (url: string) => {
+    setGitURL(url)
+    if (!projectName || projectName === 'my-app' || projectName === 'python-app') {
+      const trimmed = url.trim().replace(/\/+$/, '')
+      const parts = trimmed.split('/')
+      const last = parts[parts.length - 1] || ''
+      const name = last.replace(/\.git$/i, '')
+      if (name) {
+        setProjectName(name)
+        setProjectSubdomain(name.toLowerCase().replace(/[^a-z0-9-]/g, '-'))
       }
+    }
+  }
 
-      if (!res.ok) {
-        const err = await res.json()
-        alert(`Inspection error: ${err.error || 'Failed to inspect source.'}`)
-        setIsInspecting(false)
-        return
-      }
-
-      const data: ProjectInspection = await res.json()
-      setInspection(data)
-
-      const defaultName = inspectSourceType === 'git'
-        ? (gitURL.split('/').pop()?.replace(/\.git$/, '') || 'python-app')
-        : (zipFile?.name.replace(/\.zip$/i, '') || 'python-app')
-
-      setProjectName(defaultName)
-      setProjectSubdomain(defaultName.toLowerCase().replace(/[^a-z0-9-]/g, '-'))
-      setProjectEntrypoint(data.suggested_entrypoint)
-      setProjectRunCommand(data.suggested_command)
-      if (data.requirements_files.length > 0) {
-        setProjectRequirements(data.requirements_files[0])
-      }
-    } catch (err: any) {
-      alert(`Network error: ${err.message}`)
-    } finally {
-      setIsInspecting(false)
+  const handleZipFileChange = (file: File | null) => {
+    setZipFile(file)
+    if (file && (!projectName || projectName === 'my-app' || projectName === 'python-app')) {
+      const name = file.name.replace(/\.zip$/i, '')
+      setProjectName(name)
+      setProjectSubdomain(name.toLowerCase().replace(/[^a-z0-9-]/g, '-'))
     }
   }
 
@@ -213,27 +178,48 @@ export default function App() {
       }
     })
 
-    const payload = {
-      temp_id: inspection?.temp_id,
-      name: projectName,
-      subdomain: projectSubdomain,
-      source_type: inspectSourceType,
-      git_url: inspectSourceType === 'git' ? gitURL : undefined,
-      git_branch: inspectSourceType === 'git' ? gitBranch : undefined,
-      python_version: projectPythonVersion,
-      entrypoint: projectEntrypoint,
-      run_command: projectRunCommand,
-      requirements_file: projectRequirements,
-      env_vars: envMap,
-      auto_restart: true,
-    }
-
     try {
-      const res = await fetch('/api/projects', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
+      let res: Response
+      if (sourceType === 'git') {
+        const payload = {
+          name: projectName,
+          subdomain: projectSubdomain,
+          source_type: 'git',
+          git_url: gitURL,
+          git_branch: gitBranch,
+          python_version: projectPythonVersion,
+          run_command: projectRunCommand,
+          requirements_file: projectRequirements,
+          env_vars: envMap,
+          auto_restart: true,
+        }
+
+        res = await fetch('/api/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+      } else {
+        if (!zipFile) {
+          alert('Please select a ZIP file.')
+          setIsDeploying(false)
+          return
+        }
+
+        const formData = new FormData()
+        formData.append('file', zipFile)
+        formData.append('name', projectName)
+        formData.append('subdomain', projectSubdomain)
+        formData.append('python_version', projectPythonVersion)
+        formData.append('run_command', projectRunCommand)
+        formData.append('requirements_file', projectRequirements)
+        formData.append('env_vars', JSON.stringify(envMap))
+
+        res = await fetch('/api/projects', {
+          method: 'POST',
+          body: formData,
+        })
+      }
 
       if (!res.ok) {
         const err = await res.json()
@@ -255,14 +241,13 @@ export default function App() {
   }
 
   const resetNewForm = () => {
-    setInspection(null)
     setGitURL('')
     setGitBranch('')
     setZipFile(null)
     setProjectName('')
     setProjectSubdomain('')
-    setProjectEntrypoint('')
-    setProjectRunCommand('')
+    setProjectRunCommand('python main.py')
+    setProjectRequirements('requirements.txt')
     setProjectEnvVars([])
   }
 
@@ -430,7 +415,7 @@ export default function App() {
           <Layers size={44} style={{ color: 'var(--primary)', opacity: 0.8 }} />
           <h3 className="empty-title">No Python Projects Deployed</h3>
           <p className="empty-desc">
-            Deploy your first Python project from a public Git repository or ZIP archive.
+            Deploy your Python project directly from a public Git repository or ZIP archive.
             PyDaemon automatically provisions isolated UV virtual environments and daemon services.
           </p>
           <button
@@ -548,260 +533,217 @@ export default function App() {
               </button>
             </div>
 
-            {!inspection ? (
-              <form onSubmit={handleInspect} className="modal-body">
-                <div className="form-group">
-                  <label className="form-label">Deployment Source</label>
-                  <div className="tab-selector">
-                    <button
-                      type="button"
-                      className={`tab-btn ${inspectSourceType === 'git' ? 'active' : ''}`}
-                      onClick={() => setInspectSourceType('git')}
-                    >
-                      <FolderGit2 size={14} style={{ display: 'inline', marginRight: '6px' }} />
-                      Git Repository
-                    </button>
-                    <button
-                      type="button"
-                      className={`tab-btn ${inspectSourceType === 'zip' ? 'active' : ''}`}
-                      onClick={() => setInspectSourceType('zip')}
-                    >
-                      <FileArchive size={14} style={{ display: 'inline', marginRight: '6px' }} />
-                      Upload ZIP
-                    </button>
-                  </div>
+            <form onSubmit={handleDeploy} className="modal-body">
+              <div className="form-group">
+                <label className="form-label">Deployment Source</label>
+                <div className="tab-selector">
+                  <button
+                    type="button"
+                    className={`tab-btn ${sourceType === 'git' ? 'active' : ''}`}
+                    onClick={() => setSourceType('git')}
+                  >
+                    <FolderGit2 size={14} style={{ display: 'inline', marginRight: '6px' }} />
+                    Git Repository
+                  </button>
+                  <button
+                    type="button"
+                    className={`tab-btn ${sourceType === 'zip' ? 'active' : ''}`}
+                    onClick={() => setSourceType('zip')}
+                  >
+                    <FileArchive size={14} style={{ display: 'inline', marginRight: '6px' }} />
+                    Upload ZIP
+                  </button>
                 </div>
+              </div>
 
-                {inspectSourceType === 'git' ? (
-                  <>
-                    <div className="form-group">
-                      <label className="form-label">Public Git Repository URL</label>
-                      <input
-                        type="url"
-                        placeholder="https://github.com/username/python-api.git"
-                        value={gitURL}
-                        onChange={(e) => setGitURL(e.target.value)}
-                        required
-                      />
-                      <span className="form-help">Enter a public HTTPS repository link.</span>
-                    </div>
-
-                    <div className="form-group">
-                      <label className="form-label">Branch (Optional)</label>
-                      <input
-                        type="text"
-                        placeholder="main"
-                        value={gitBranch}
-                        onChange={(e) => setGitBranch(e.target.value)}
-                      />
-                    </div>
-                  </>
-                ) : (
+              {sourceType === 'git' ? (
+                <>
                   <div className="form-group">
-                    <label className="form-label">Select ZIP File</label>
+                    <label className="form-label">Public Git Repository URL</label>
                     <input
-                      type="file"
-                      accept=".zip"
-                      onChange={(e) => setZipFile(e.target.files?.[0] || null)}
+                      type="url"
+                      placeholder="https://github.com/username/my-python-app"
+                      value={gitURL}
+                      onChange={(e) => handleGitURLChange(e.target.value)}
                       required
                     />
-                    <span className="form-help">Upload project folder packed as a .zip file.</span>
+                    <span className="form-help">PyDaemon will clone this repository directly during deployment.</span>
                   </div>
-                )}
+
+                  <div className="form-group">
+                    <label className="form-label">Branch (Optional)</label>
+                    <input
+                      type="text"
+                      placeholder="main"
+                      value={gitBranch}
+                      onChange={(e) => setGitBranch(e.target.value)}
+                    />
+                  </div>
+                </>
+              ) : (
+                <div className="form-group">
+                  <label className="form-label">Select ZIP File</label>
+                  <input
+                    type="file"
+                    accept=".zip"
+                    onChange={(e) => handleZipFileChange(e.target.files?.[0] || null)}
+                    required
+                  />
+                  <span className="form-help">Upload project archive containing your Python files.</span>
+                </div>
+              )}
+
+              <div className="form-group">
+                <label className="form-label">Project Name</label>
+                <input
+                  type="text"
+                  placeholder="my-app"
+                  value={projectName}
+                  onChange={(e) => {
+                    setProjectName(e.target.value)
+                    if (!projectSubdomain || projectSubdomain === projectName.toLowerCase().replace(/[^a-z0-9-]/g, '-')) {
+                      setProjectSubdomain(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-'))
+                    }
+                  }}
+                  required
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Subdomain Name</label>
+                <input
+                  type="text"
+                  placeholder="my-app"
+                  value={projectSubdomain}
+                  onChange={(e) => setProjectSubdomain(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-'))}
+                  required
+                />
+                <span className="form-help">
+                  Address: {getPublicURL(projectSubdomain || 'my-app')}
+                </span>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Python Version (Astral UV)</label>
+                <select
+                  value={projectPythonVersion}
+                  onChange={(e) => setProjectPythonVersion(e.target.value)}
+                >
+                  {systemStatus?.versions && systemStatus.versions.length > 0 ? (
+                    systemStatus.versions.map((v) => (
+                      <option key={v.raw_name} value={v.version}>
+                        Python {v.version} {v.is_installed ? '(Installed)' : '(UV Auto-download)'}
+                      </option>
+                    ))
+                  ) : (
+                    <>
+                      <option value="3.14">Python 3.14</option>
+                      <option value="3.13">Python 3.13</option>
+                      <option value="3.12">Python 3.12</option>
+                      <option value="3.11">Python 3.11</option>
+                      <option value="3.10">Python 3.10</option>
+                    </>
+                  )}
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Run Command</label>
+                <input
+                  type="text"
+                  placeholder="python main.py"
+                  value={projectRunCommand}
+                  onChange={(e) => setProjectRunCommand(e.target.value)}
+                  required
+                />
+                <span className="form-help">Command executed to start the service. Use $PORT for port binding (e.g. python main.py or uvicorn main:app --host 0.0.0.0 --port $PORT).</span>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Requirements File</label>
+                <input
+                  type="text"
+                  placeholder="requirements.txt"
+                  value={projectRequirements}
+                  onChange={(e) => setProjectRequirements(e.target.value)}
+                />
+                <span className="form-help">Dependencies installed via UV pip. Left as requirements.txt by default.</span>
+              </div>
+
+              <div className="form-group">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <label className="form-label">Environment Variables</label>
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    onClick={() => setProjectEnvVars([...projectEnvVars, { key: '', value: '' }])}
+                    style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem' }}
+                  >
+                    + Add Variable
+                  </button>
+                </div>
+                {projectEnvVars.map((item, idx) => (
+                  <div key={idx} className="env-row" style={{ marginTop: '0.3rem' }}>
+                    <input
+                      type="text"
+                      placeholder="KEY"
+                      value={item.key}
+                      onChange={(e) => {
+                        const next = [...projectEnvVars]
+                        next[idx].key = e.target.value
+                        setProjectEnvVars(next)
+                      }}
+                      style={{ flex: 1 }}
+                    />
+                    <input
+                      type="text"
+                      placeholder="VALUE"
+                      value={item.value}
+                      onChange={(e) => {
+                        const next = [...projectEnvVars]
+                        next[idx].value = e.target.value
+                        setProjectEnvVars(next)
+                      }}
+                      style={{ flex: 1 }}
+                    />
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      onClick={() => {
+                        setProjectEnvVars(projectEnvVars.filter((_, i) => i !== idx))
+                      }}
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem', marginTop: '1rem' }}>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => setIsNewModalOpen(false)}
+                >
+                  Cancel
+                </button>
 
                 <button
                   type="submit"
                   className="btn-primary"
-                  disabled={isInspecting}
-                  style={{ alignSelf: 'flex-end', marginTop: '0.5rem' }}
+                  disabled={isDeploying}
                 >
-                  {isInspecting ? (
+                  {isDeploying ? (
                     <>
                       <RefreshCw size={14} className="spin" />
-                      <span>Inspecting Project...</span>
+                      <span>Deploying...</span>
                     </>
                   ) : (
-                    <span>Inspect & Configure</span>
+                    <span>Deploy Project</span>
                   )}
                 </button>
-              </form>
-            ) : (
-              <form onSubmit={handleDeploy} className="modal-body">
-                <div style={{ padding: '0.75rem', background: 'rgba(59, 130, 246, 0.08)', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(59, 130, 246, 0.2)' }}>
-                  <div style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--primary)' }}>
-                    Detected Framework: {inspection.detected_framework}
-                  </div>
-                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                    Found {inspection.python_files.length} Python source file(s) and {inspection.requirements_files.length} requirement specification(s).
-                  </div>
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Project Name</label>
-                  <input
-                    type="text"
-                    value={projectName}
-                    onChange={(e) => setProjectName(e.target.value)}
-                    required
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Subdomain Name</label>
-                  <input
-                    type="text"
-                    value={projectSubdomain}
-                    onChange={(e) => setProjectSubdomain(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-'))}
-                    required
-                  />
-                  <span className="form-help">
-                    Public Address: {getPublicURL(projectSubdomain || 'myapp')}
-                  </span>
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Python Version (UV Toolchain)</label>
-                  <select
-                    value={projectPythonVersion}
-                    onChange={(e) => setProjectPythonVersion(e.target.value)}
-                  >
-                    {systemStatus?.versions && systemStatus.versions.length > 0 ? (
-                      systemStatus.versions.map((v) => (
-                        <option key={v.raw_name} value={v.version}>
-                          Python {v.version} {v.is_installed ? '(Installed)' : '(UV Auto-download)'}
-                        </option>
-                      ))
-                    ) : (
-                      <>
-                        <option value="3.14">Python 3.14</option>
-                        <option value="3.13">Python 3.13</option>
-                        <option value="3.12">Python 3.12</option>
-                        <option value="3.11">Python 3.11</option>
-                        <option value="3.10">Python 3.10</option>
-                      </>
-                    )}
-                  </select>
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Main Python File / Entrypoint</label>
-                  <select
-                    value={projectEntrypoint}
-                    onChange={(e) => setProjectEntrypoint(e.target.value)}
-                  >
-                    {inspection.python_files.map((file) => (
-                      <option key={file} value={file}>{file}</option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Run Command</label>
-                  <input
-                    type="text"
-                    value={projectRunCommand}
-                    onChange={(e) => setProjectRunCommand(e.target.value)}
-                    required
-                  />
-                  <span className="form-help">Use $PORT for dynamic port binding (e.g. uvicorn main:app --port $PORT).</span>
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Requirements File</label>
-                  {inspection.requirements_files.length > 0 ? (
-                    <select
-                      value={projectRequirements}
-                      onChange={(e) => setProjectRequirements(e.target.value)}
-                    >
-                      {inspection.requirements_files.map((rf) => (
-                        <option key={rf} value={rf}>{rf}</option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      type="text"
-                      placeholder="requirements.txt"
-                      value={projectRequirements}
-                      onChange={(e) => setProjectRequirements(e.target.value)}
-                    />
-                  )}
-                </div>
-
-                <div className="form-group">
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <label className="form-label">Environment Variables</label>
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      onClick={() => setProjectEnvVars([...projectEnvVars, { key: '', value: '' }])}
-                      style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem' }}
-                    >
-                      + Add Variable
-                    </button>
-                  </div>
-                  {projectEnvVars.map((item, idx) => (
-                    <div key={idx} className="env-row" style={{ marginTop: '0.3rem' }}>
-                      <input
-                        type="text"
-                        placeholder="KEY"
-                        value={item.key}
-                        onChange={(e) => {
-                          const next = [...projectEnvVars]
-                          next[idx].key = e.target.value
-                          setProjectEnvVars(next)
-                        }}
-                        style={{ flex: 1 }}
-                      />
-                      <input
-                        type="text"
-                        placeholder="VALUE"
-                        value={item.value}
-                        onChange={(e) => {
-                          const next = [...projectEnvVars]
-                          next[idx].value = e.target.value
-                          setProjectEnvVars(next)
-                        }}
-                        style={{ flex: 1 }}
-                      />
-                      <button
-                        type="button"
-                        className="icon-btn"
-                        onClick={() => {
-                          setProjectEnvVars(projectEnvVars.filter((_, i) => i !== idx))
-                        }}
-                      >
-                        <X size={14} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '1rem' }}>
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    onClick={() => setInspection(null)}
-                  >
-                    Back
-                  </button>
-
-                  <button
-                    type="submit"
-                    className="btn-primary"
-                    disabled={isDeploying}
-                  >
-                    {isDeploying ? (
-                      <>
-                        <RefreshCw size={14} className="spin" />
-                        <span>Deploying...</span>
-                      </>
-                    ) : (
-                      <span>Deploy Application</span>
-                    )}
-                  </button>
-                </div>
-              </form>
-            )}
+              </div>
+            </form>
           </div>
         </div>
       )}

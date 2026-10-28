@@ -230,9 +230,66 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	var req domain.CreateProjectRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	var tempDir string
+
+	contentType := r.Header.Get("Content-Type")
+	if strings.HasPrefix(contentType, "multipart/form-data") {
+		if err := r.ParseMultipartForm(100 << 20); err != nil {
+			writeError(w, http.StatusBadRequest, "failed to parse multipart form")
+			return
+		}
+
+		req.Name = r.FormValue("name")
+		req.Subdomain = r.FormValue("subdomain")
+		req.SourceType = "zip"
+		req.PythonVersion = r.FormValue("python_version")
+		req.RunCommand = r.FormValue("run_command")
+		req.RequirementsFile = r.FormValue("requirements_file")
+		req.AutoRestart = true
+
+		if envJSON := r.FormValue("env_vars"); envJSON != "" {
+			var envMap map[string]string
+			if err := json.Unmarshal([]byte(envJSON), &envMap); err == nil {
+				req.EnvVars = envMap
+			}
+		}
+
+		file, _, err := r.FormFile("file")
+		if err == nil && file != nil {
+			defer file.Close()
+			tempID := generateRandomID(8)
+			tempDir = filepath.Join(os.TempDir(), "pyd-upload-"+tempID)
+			zipPath := tempDir + ".zip"
+
+			outZip, err := os.Create(zipPath)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to create temporary zip")
+				return
+			}
+			_, err = io.Copy(outZip, file)
+			outZip.Close()
+			if err != nil {
+				_ = os.Remove(zipPath)
+				writeError(w, http.StatusInternalServerError, "failed to save zip")
+				return
+			}
+
+			err = git.ExtractZip(zipPath, tempDir)
+			_ = os.Remove(zipPath)
+			if err != nil {
+				_ = os.RemoveAll(tempDir)
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to extract zip: %v", err))
+				return
+			}
+		}
+	} else {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if req.TempID != "" {
+			tempDir = filepath.Join(os.TempDir(), "pyd-inspect-"+req.TempID)
+		}
 	}
 
 	if req.Name == "" {
@@ -262,18 +319,37 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		pyVer = "3.12"
 	}
 
+	runCmd := req.RunCommand
+	if runCmd == "" {
+		runCmd = "python main.py"
+	}
+
+	reqFile := req.RequirementsFile
+	if reqFile == "" {
+		reqFile = "requirements.txt"
+	}
+
+	srcType := req.SourceType
+	if srcType == "" {
+		if req.GitURL != "" {
+			srcType = "git"
+		} else {
+			srcType = "zip"
+		}
+	}
+
 	p := &domain.Project{
 		ID:               projectID,
 		Name:             req.Name,
 		Subdomain:        subdomain,
 		Port:             port,
-		SourceType:       req.SourceType,
+		SourceType:       srcType,
 		GitURL:           req.GitURL,
 		GitBranch:        req.GitBranch,
 		PythonVersion:    pyVer,
 		Entrypoint:       req.Entrypoint,
-		RunCommand:       req.RunCommand,
-		RequirementsFile: req.RequirementsFile,
+		RunCommand:       runCmd,
+		RequirementsFile: reqFile,
 		EnvVars:          req.EnvVars,
 		Status:           domain.StatusBuilding,
 		AutoRestart:      true,
@@ -288,11 +364,6 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.Create(p); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-
-	tempDir := ""
-	if req.TempID != "" {
-		tempDir = filepath.Join(os.TempDir(), "pyd-inspect-"+req.TempID)
 	}
 
 	go func() {
