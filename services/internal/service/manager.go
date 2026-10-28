@@ -125,6 +125,65 @@ func (m *Manager) Restart(p *domain.Project) error {
 	return m.supervisor.Restart(p, projectDir)
 }
 
+func (m *Manager) PullAndDeploy(p *domain.Project, logWriter io.Writer) error {
+	projectDir := filepath.Join(m.cfg.AppsDir, p.ID)
+	sourceDir := filepath.Join(projectDir, "source")
+
+	_, _ = fmt.Fprintln(logWriter, "Pulling latest changes from git repository...")
+	if err := m.gitClient.Pull(sourceDir, logWriter); err != nil {
+		_, _ = fmt.Fprintf(logWriter, "Git pull error: %v\n", err)
+		return err
+	}
+	_, _ = fmt.Fprintln(logWriter, "Git pull completed successfully.")
+
+	if p.RequirementsFile != "" {
+		reqPath := filepath.Join(sourceDir, p.RequirementsFile)
+		if _, err := os.Stat(reqPath); err == nil {
+			_, _ = fmt.Fprintf(logWriter, "Installing dependencies from %s...\n", p.RequirementsFile)
+			_ = m.uvClient.InstallRequirements(projectDir, p.RequirementsFile, logWriter)
+		}
+	}
+
+	_, _ = fmt.Fprintln(logWriter, "Restarting application service...")
+	return m.Restart(p)
+}
+
+func (m *Manager) UpdateZipAndDeploy(p *domain.Project, zipPath string, logWriter io.Writer) error {
+	projectDir := filepath.Join(m.cfg.AppsDir, p.ID)
+	sourceDir := filepath.Join(projectDir, "source")
+
+	_, _ = fmt.Fprintln(logWriter, "Extracting updated ZIP package...")
+	if err := git.ExtractZip(zipPath, sourceDir); err != nil {
+		_, _ = fmt.Fprintf(logWriter, "ZIP extraction error: %v\n", err)
+		return err
+	}
+	_, _ = fmt.Fprintln(logWriter, "ZIP extracted successfully.")
+
+	if p.RequirementsFile != "" {
+		reqPath := filepath.Join(sourceDir, p.RequirementsFile)
+		if _, err := os.Stat(reqPath); err == nil {
+			_, _ = fmt.Fprintf(logWriter, "Installing dependencies from %s...\n", p.RequirementsFile)
+			_ = m.uvClient.InstallRequirements(projectDir, p.RequirementsFile, logWriter)
+		}
+	}
+
+	_, _ = fmt.Fprintln(logWriter, "Restarting application service...")
+	return m.Restart(p)
+}
+
+func (m *Manager) SyncEnvAndRestart(p *domain.Project) error {
+	projectDir := filepath.Join(m.cfg.AppsDir, p.ID)
+	if err := m.writeEnvFile(projectDir, p.EnvVars, p.Port); err != nil {
+		return err
+	}
+
+	if m.cfg.IsSystemd {
+		_ = m.setupSystemdService(p, projectDir)
+	}
+
+	return m.Restart(p)
+}
+
 func (m *Manager) Remove(p *domain.Project) error {
 	_ = m.Stop(p)
 

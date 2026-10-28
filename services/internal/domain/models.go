@@ -75,6 +75,7 @@ type CreateProjectRequest struct {
 }
 
 type UpdateProjectRequest struct {
+	Name             string            `json:"name"`
 	Subdomain        string            `json:"subdomain"`
 	Port             int               `json:"port"`
 	PythonVersion    string            `json:"python_version"`

@@ -75,6 +75,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/projects/{id}/stop", s.handleStopProject)
 	mux.HandleFunc("POST /api/projects/{id}/restart", s.handleRestartProject)
 	mux.HandleFunc("POST /api/projects/{id}/rebuild", s.handleRebuildProject)
+	mux.HandleFunc("POST /api/projects/{id}/pull", s.handlePullProject)
+	mux.HandleFunc("POST /api/projects/{id}/update-zip", s.handleUpdateZipProject)
 
 	mux.HandleFunc("GET /api/projects/{id}/logs", s.handleGetLogs)
 	mux.HandleFunc("GET /api/projects/{id}/logs/stream", s.handleStreamLogs)
@@ -413,12 +415,23 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Subdomain != "" {
+	if req.Name != "" {
+		p.Name = req.Name
+	}
+
+	oldSubdomain := p.Subdomain
+	subdomainChanged := false
+	if req.Subdomain != "" && req.Subdomain != p.Subdomain {
 		p.Subdomain = sanitizeSubdomain(req.Subdomain)
+		subdomainChanged = true
 	}
-	if req.Port > 0 {
+
+	portChanged := false
+	if req.Port > 0 && req.Port != p.Port {
 		p.Port = req.Port
+		portChanged = true
 	}
+
 	if req.PythonVersion != "" {
 		p.PythonVersion = req.PythonVersion
 	}
@@ -436,13 +449,142 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 	}
 	p.AutoRestart = req.AutoRestart
 
+	if subdomainChanged {
+		if other, exists := s.store.GetBySubdomain(p.Subdomain); exists && other.ID != p.ID {
+			writeError(w, http.StatusConflict, fmt.Sprintf("subdomain '%s' is already in use", p.Subdomain))
+			return
+		}
+	}
+
 	if err := s.store.Update(p); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	_ = s.manager.Restart(p)
+	if subdomainChanged {
+		_ = s.cfTunnel.DeleteCloudflareRoute(oldSubdomain)
+		_ = s.cfTunnel.CreateCloudflareRoute(p.Subdomain, p.Port)
+	} else if portChanged {
+		_ = s.cfTunnel.CreateCloudflareRoute(p.Subdomain, p.Port)
+	}
+
+	if subdomainChanged || portChanged {
+		routes := make(map[string]int)
+		for _, proj := range s.store.GetAll() {
+			routes[proj.Subdomain] = proj.Port
+		}
+		_ = s.cfTunnel.SyncIngressConfig(routes)
+	}
+
+	if p.SourceType != "tunnel" {
+		_ = s.manager.SyncEnvAndRestart(p)
+	}
+
 	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) handlePullProject(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	p, err := s.store.Get(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	if p.SourceType != "git" || p.GitURL == "" {
+		writeError(w, http.StatusBadRequest, "project source is not a git repository")
+		return
+	}
+
+	go func() {
+		projectDir := filepath.Join(s.cfg.AppsDir, p.ID)
+		logsDir := filepath.Join(projectDir, "logs")
+		logFile, _ := os.OpenFile(filepath.Join(logsDir, "app.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		var writer io.Writer = os.Stdout
+		if logFile != nil {
+			writer = io.MultiWriter(os.Stdout, logFile)
+			defer logFile.Close()
+		}
+
+		p.Status = domain.StatusBuilding
+		_ = s.store.Update(p)
+
+		pullErr := s.manager.PullAndDeploy(p, writer)
+		if pullErr != nil {
+			p.Status = domain.StatusFailed
+			p.ErrorMessage = pullErr.Error()
+		} else {
+			p.Status = domain.StatusRunning
+			p.ErrorMessage = ""
+		}
+		_ = s.store.Update(p)
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"message": "git pull update initiated"})
+}
+
+func (s *Server) handleUpdateZipProject(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	p, err := s.store.Get(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	if err := r.ParseMultipartForm(100 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "failed to parse multipart form")
+		return
+	}
+
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "file field is required")
+		return
+	}
+	defer file.Close()
+
+	tempID := generateRandomID(8)
+	zipPath := filepath.Join(os.TempDir(), "pyd-update-"+tempID+".zip")
+	outZip, err := os.Create(zipPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create temporary zip file")
+		return
+	}
+	_, err = io.Copy(outZip, file)
+	outZip.Close()
+	if err != nil {
+		_ = os.Remove(zipPath)
+		writeError(w, http.StatusInternalServerError, "failed to write zip file")
+		return
+	}
+
+	go func() {
+		defer os.Remove(zipPath)
+
+		projectDir := filepath.Join(s.cfg.AppsDir, p.ID)
+		logsDir := filepath.Join(projectDir, "logs")
+		logFile, _ := os.OpenFile(filepath.Join(logsDir, "app.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		var writer io.Writer = os.Stdout
+		if logFile != nil {
+			writer = io.MultiWriter(os.Stdout, logFile)
+			defer logFile.Close()
+		}
+
+		p.Status = domain.StatusBuilding
+		_ = s.store.Update(p)
+
+		deployErr := s.manager.UpdateZipAndDeploy(p, zipPath, writer)
+		if deployErr != nil {
+			p.Status = domain.StatusFailed
+			p.ErrorMessage = deployErr.Error()
+		} else {
+			p.Status = domain.StatusRunning
+			p.ErrorMessage = ""
+		}
+		_ = s.store.Update(p)
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"message": "zip update initiated"})
 }
 
 func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {

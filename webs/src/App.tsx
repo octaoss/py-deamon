@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2026 Yohanes Oktanio. All Rights Reserved.
  *
- * Full Python hosting dashboard with automated Cloudflare Zero Trust Tunnel API integration.
+ * Minimal Vercel-inspired SaaS dashboard for PyDaemon with project editing, git pull, and ZIP updating.
  */
 
 import React, { useState, useEffect, useRef } from 'react'
@@ -9,12 +9,8 @@ import {
   Plus,
   Trash2,
   ExternalLink,
-  ShieldCheck,
-  Layers,
   X,
   RefreshCw,
-  Clock,
-  ArrowRight,
   Copy,
   Check,
   FolderGit2,
@@ -23,7 +19,10 @@ import {
   Play,
   Square,
   RotateCw,
-  Radio
+  Radio,
+  Download,
+  Upload,
+  Settings
 } from 'lucide-react'
 import type {
   Project,
@@ -40,6 +39,8 @@ export default function App() {
   const [isNewModalOpen, setIsNewModalOpen] = useState<boolean>(false)
   const [isCFModalOpen, setIsCFModalOpen] = useState<boolean>(false)
   const [selectedProject, setSelectedProject] = useState<Project | null>(null)
+  const [editingProject, setEditingProject] = useState<Project | null>(null)
+  const [updatingZipProject, setUpdatingZipProject] = useState<Project | null>(null)
 
   const [projectName, setProjectName] = useState<string>('')
   const [projectSubdomain, setProjectSubdomain] = useState<string>('')
@@ -54,6 +55,17 @@ export default function App() {
   const [envVars, setEnvVars] = useState<Array<{ key: string; value: string }>>([])
   const [isDeploying, setIsDeploying] = useState<boolean>(false)
 
+  const [editName, setEditName] = useState<string>('')
+  const [editSubdomain, setEditSubdomain] = useState<string>('')
+  const [editPort, setEditPort] = useState<number | ''>(8000)
+  const [editRunCommand, setEditRunCommand] = useState<string>('')
+  const [editRequirements, setEditRequirements] = useState<string>('')
+  const [editEnvVars, setEditEnvVars] = useState<Array<{ key: string; value: string }>>([])
+  const [isSavingEdit, setIsSavingEdit] = useState<boolean>(false)
+
+  const [newZipUploadFile, setNewZipUploadFile] = useState<File | null>(null)
+  const [isUploadingZip, setIsUploadingZip] = useState<boolean>(false)
+
   const [projectLogs, setProjectLogs] = useState<string[]>([])
   const terminalEndRef = useRef<HTMLDivElement>(null)
 
@@ -66,6 +78,7 @@ export default function App() {
   const [isSavingCF, setIsSavingCF] = useState<boolean>(false)
 
   const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [actionLoadingId, setActionLoadingId] = useState<string | null>(null)
 
   useEffect(() => {
     fetchInitialData()
@@ -217,7 +230,7 @@ export default function App() {
 
       if (!res.ok) {
         const err = await res.json()
-        alert(`Gagal membuat project / route: ${err.error || 'Terjadi kesalahan'}`)
+        alert(`Failed to create project: ${err.error || 'Unknown error'}`)
         setIsDeploying(false)
         return
       }
@@ -251,6 +264,115 @@ export default function App() {
     setEnvVars([])
   }
 
+  const openEditModal = (p: Project) => {
+    setEditingProject(p)
+    setEditName(p.name)
+    setEditSubdomain(p.subdomain)
+    setEditPort(p.port)
+    setEditRunCommand(p.run_command || '')
+    setEditRequirements(p.requirements_file || '')
+
+    const envArr: Array<{ key: string; value: string }> = []
+    if (p.env_vars) {
+      Object.entries(p.env_vars).forEach(([k, v]) => {
+        envArr.push({ key: k, value: v })
+      })
+    }
+    setEditEnvVars(envArr)
+  }
+
+  const handleSaveEdit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!editingProject) return
+    setIsSavingEdit(true)
+
+    const envMap: Record<string, string> = {}
+    editEnvVars.forEach((item) => {
+      if (item.key.trim()) {
+        envMap[item.key.trim()] = item.value
+      }
+    })
+
+    const payload = {
+      name: editName,
+      subdomain: editSubdomain.toLowerCase().replace(/[^a-z0-9-]/g, '-'),
+      port: Number(editPort) || editingProject.port,
+      run_command: editRunCommand,
+      requirements_file: editRequirements,
+      env_vars: envMap,
+      auto_restart: true,
+    }
+
+    try {
+      const res = await fetch(`/api/projects/${editingProject.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+
+      if (res.ok) {
+        setEditingProject(null)
+        await fetchProjects()
+      } else {
+        const err = await res.json()
+        alert(`Update error: ${err.error}`)
+      }
+    } catch (err: any) {
+      alert(`Network error: ${err.message}`)
+    } finally {
+      setIsSavingEdit(false)
+    }
+  }
+
+  const handlePullGit = async (p: Project) => {
+    setActionLoadingId(p.id)
+    try {
+      const res = await fetch(`/api/projects/${p.id}/pull`, { method: 'POST' })
+      if (res.ok) {
+        await fetchProjects()
+        setSelectedProject(p)
+      } else {
+        const err = await res.json()
+        alert(`Git pull error: ${err.error}`)
+      }
+    } catch (err: any) {
+      alert(`Network error: ${err.message}`)
+    } finally {
+      setActionLoadingId(null)
+    }
+  }
+
+  const handleUploadNewZip = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!updatingZipProject || !newZipUploadFile) return
+    setIsUploadingZip(true)
+
+    const formData = new FormData()
+    formData.append('file', newZipUploadFile)
+
+    try {
+      const res = await fetch(`/api/projects/${updatingZipProject.id}/update-zip`, {
+        method: 'POST',
+        body: formData,
+      })
+
+      if (res.ok) {
+        const p = updatingZipProject
+        setUpdatingZipProject(null)
+        setNewZipUploadFile(null)
+        await fetchProjects()
+        setSelectedProject(p)
+      } else {
+        const err = await res.json()
+        alert(`Upload error: ${err.error}`)
+      }
+    } catch (err: any) {
+      alert(`Network error: ${err.message}`)
+    } finally {
+      setIsUploadingZip(false)
+    }
+  }
+
   const handleStart = async (p: Project) => {
     await fetch(`/api/projects/${p.id}/start`, { method: 'POST' })
     await fetchProjects()
@@ -266,13 +388,8 @@ export default function App() {
     await fetchProjects()
   }
 
-  const handleRebuild = async (p: Project) => {
-    await fetch(`/api/projects/${p.id}/rebuild`, { method: 'POST' })
-    await fetchProjects()
-  }
-
   const handleDelete = async (p: Project) => {
-    if (!confirm(`Hapus project dan Cloudflare route "${p.subdomain}"?`)) {
+    if (!confirm(`Are you sure you want to delete project "${p.name}"?`)) {
       return
     }
     await fetch(`/api/projects/${p.id}`, { method: 'DELETE' })
@@ -305,7 +422,7 @@ export default function App() {
         setIsCFModalOpen(false)
       } else {
         const err = await res.json()
-        alert(`Pengaturan Cloudflare gagal: ${err.error}`)
+        alert(`Cloudflare configuration error: ${err.error}`)
       }
     } catch (err: any) {
       alert(`Network error: ${err.message}`)
@@ -338,13 +455,9 @@ export default function App() {
     <div className="container">
       <header className="header">
         <div className="brand">
-          <div className="logo-badge">
-            <Layers size={22} />
-          </div>
-          <div>
-            <div className="brand-title">PyDaemon</div>
-            <div className="brand-subtitle">Python Hosting Manager with Cloudflare Zero Trust Tunnel API</div>
-          </div>
+          <div className="logo-badge">▲</div>
+          <span className="brand-title">PyDaemon</span>
+          <span className="brand-badge">Python Hosting</span>
         </div>
 
         <div className="header-actions">
@@ -353,9 +466,9 @@ export default function App() {
             className="btn-secondary"
             onClick={() => setIsCFModalOpen(true)}
           >
-            <ShieldCheck size={16} />
+            <span className={`dot ${cfStatus?.domain ? 'dot-green' : 'dot-amber'}`} />
             <span>
-              {cfStatus?.domain ? `CF: ${cfStatus.domain}` : 'Pengaturan Cloudflare API'}
+              {cfStatus?.domain ? cfStatus.domain : 'Cloudflare API Setup'}
             </span>
           </button>
 
@@ -367,61 +480,67 @@ export default function App() {
               setIsNewModalOpen(true)
             }}
           >
-            <Plus size={16} />
-            <span>New Project / Route</span>
+            <Plus size={14} />
+            <span>New Project</span>
           </button>
         </div>
       </header>
 
       {systemStatus && (
-        <section className="stats-grid">
-          <div className="stat-card">
-            <div className="stat-label">Total Projects & Routes</div>
-            <div className="stat-value" style={{ color: 'var(--success)' }}>
-              {projects.length}
-            </div>
+        <section className="overview-bar">
+          <div className="overview-col">
+            <div className="overview-label">Projects & Routes</div>
+            <div className="overview-val">{projects.length}</div>
           </div>
 
-          <div className="stat-card">
-            <div className="stat-label">Cloudflare Root Domain</div>
+          <div className="overview-col">
+            <div className="overview-label">Root Domain</div>
             <div
-              className="stat-value"
-              style={{ fontSize: '1.15rem', color: cfStatus?.domain ? 'var(--primary)' : 'var(--text-dim)', cursor: 'pointer' }}
+              className="overview-val"
+              style={{ fontSize: '1.05rem', cursor: 'pointer' }}
               onClick={() => setIsCFModalOpen(true)}
             >
-              {cfStatus?.domain || 'Belum diatur (Klik di sini)'}
+              {cfStatus?.domain || 'Not configured'}
             </div>
           </div>
 
-          <div className="stat-card">
-            <div className="stat-label">Cloudflare API Status</div>
-            <div className="stat-value" style={{ fontSize: '1.15rem', display: 'flex', alignItems: 'center', gap: '0.4rem', color: cfStatus?.api_token ? 'var(--success)' : 'var(--warning)' }}>
-              <ShieldCheck size={18} />
-              {cfStatus?.api_token ? 'API Connected' : 'Manual / CLI'}
+          <div className="overview-col">
+            <div className="overview-label">Cloudflare API</div>
+            <div className="overview-val" style={{ fontSize: '1.05rem', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+              <span className={`dot ${cfStatus?.api_token ? 'dot-green' : 'dot-amber'}`} />
+              <span style={{ fontSize: '0.95rem' }}>
+                {cfStatus?.api_token ? 'Connected' : 'Manual / CLI'}
+              </span>
             </div>
           </div>
 
-          <div className="stat-card">
-            <div className="stat-label">Daemon Uptime</div>
-            <div className="stat-value" style={{ fontSize: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-              <Clock size={18} />
+          <div className="overview-col">
+            <div className="overview-label">Daemon Uptime</div>
+            <div className="overview-val" style={{ fontSize: '1.05rem' }}>
               {formatUptime(systemStatus.uptime_seconds)}
             </div>
           </div>
         </section>
       )}
 
+      <div className="projects-section-header">
+        <h2 className="section-title">Projects & Deployments</h2>
+      </div>
+
       {loading ? (
-        <div style={{ textAlign: 'center', padding: '4rem 0', color: 'var(--text-muted)' }}>
-          <RefreshCw size={24} className="spin" style={{ marginBottom: '1rem' }} />
-          <div>Memuat data PyDaemon...</div>
+        <div style={{ textAlign: 'center', padding: '4rem 0', color: 'var(--text-secondary)' }}>
+          <RefreshCw size={20} className="spin" style={{ marginBottom: '0.75rem' }} />
+          <div style={{ fontSize: '0.85rem' }}>Loading projects...</div>
         </div>
       ) : projects.length === 0 ? (
         <div className="empty-state">
-          <Layers size={44} style={{ color: 'var(--primary)', opacity: 0.8 }} />
-          <h3 className="empty-title">Belum Ada Project Python atau Route</h3>
+          <div style={{ width: 40, height: 40, margin: '0 auto', background: 'var(--bg-subtle)', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid var(--border)' }}>
+            ▲
+          </div>
+          <h3 className="empty-title">No Projects Deployed</h3>
           <p className="empty-desc">
-            Deploy project Python Anda (Git/ZIP/Port) dan hubungkan langsung ke domain Cloudflare secara otomatis melalui Cloudflare Zero Trust API.
+            Deploy your first Python application from a Git repository or ZIP package,
+            or expose a local port through Cloudflare Zero Trust.
           </p>
           <button
             type="button"
@@ -431,128 +550,145 @@ export default function App() {
               setIsNewModalOpen(true)
             }}
           >
-            <Plus size={16} />
-            <span>Deploy Project Baru</span>
+            <Plus size={14} />
+            <span>Create your first project</span>
           </button>
         </div>
       ) : (
-        <div className="projects-grid">
+        <div className="project-list">
           {projects.map((p) => {
             const host = getPublicHost(p.subdomain)
             const fullUrl = `https://${host}`
 
+            let dotClass = 'dot-green'
+            if (p.status === 'building') dotClass = 'dot-amber'
+            else if (p.status === 'stopped') dotClass = 'dot-gray'
+            else if (p.status === 'failed') dotClass = 'dot-red'
+
             return (
-              <div key={p.id} className="project-card">
-                <div className="card-top">
-                  <div>
-                    <h3 className="project-name">{p.name}</h3>
-                    <div style={{ fontSize: '0.85rem', color: 'var(--text-dim)' }}>
-                      Subdomain: <strong style={{ color: 'var(--text-main)' }}>{p.subdomain}</strong>
-                    </div>
+              <div key={p.id} className="project-row">
+                <div className="project-left">
+                  <div className="project-heading">
+                    <span className={`dot ${dotClass}`} />
+                    <span className="project-title">{p.name}</span>
+                    <span className="pill" style={{ textTransform: 'uppercase', fontSize: '0.7rem' }}>
+                      {p.status}
+                    </span>
                   </div>
-                  <span className={`status-badge status-${p.status}`}>
-                    <span className="pulse-dot" />
-                    {p.status}
-                  </span>
-                </div>
 
-                <div style={{
-                  background: 'rgba(59, 130, 246, 0.08)',
-                  border: '1px solid rgba(59, 130, 246, 0.25)',
-                  borderRadius: 'var(--radius-sm)',
-                  padding: '0.85rem',
-                  marginBottom: '1.25rem',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: '0.5rem',
-                  fontSize: '0.88rem',
-                  fontFamily: 'ui-monospace, monospace'
-                }}>
-                  <span style={{ color: '#34d399', fontWeight: 600 }}>localhost:{p.port}</span>
-                  <ArrowRight size={14} style={{ color: 'var(--text-dim)', flexShrink: 0 }} />
-                  <span style={{ color: '#60a5fa', fontWeight: 600 }}>{host}</span>
-                </div>
-
-                <div className="card-meta">
-                  <span className="meta-pill">Port :{p.port}</span>
-                  {p.python_version ? <span className="meta-pill">Python {p.python_version}</span> : null}
-                  {p.pid ? <span className="meta-pill">PID {p.pid}</span> : null}
-                  <span className="meta-pill">{p.source_type}</span>
-                </div>
-
-                <div className="card-actions">
-                  <div style={{ display: 'flex', gap: '0.45rem' }}>
-                    {p.source_type !== 'tunnel' && (
-                      <>
-                        {p.status === 'running' ? (
-                          <button
-                            type="button"
-                            className="icon-btn"
-                            title="Stop service"
-                            onClick={() => handleStop(p)}
-                          >
-                            <Square size={14} />
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            className="icon-btn"
-                            title="Start service"
-                            onClick={() => handleStart(p)}
-                          >
-                            <Play size={14} />
-                          </button>
-                        )}
-
-                        <button
-                          type="button"
-                          className="icon-btn"
-                          title="Restart service"
-                          onClick={() => handleRestart(p)}
-                        >
-                          <RotateCw size={14} />
-                        </button>
-
-                        <button
-                          type="button"
-                          className="icon-btn"
-                          title="Lihat Logs"
-                          onClick={() => setSelectedProject(p)}
-                        >
-                          <Terminal size={14} />
-                        </button>
-                      </>
-                    )}
-
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      title="Copy URL Cloudflare"
-                      onClick={() => copyToClipboard(fullUrl, p.id)}
-                    >
-                      {copiedId === p.id ? <Check size={14} style={{ color: '#34d399' }} /> : <Copy size={14} />}
-                    </button>
-
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
                     <a
                       href={fullUrl}
                       target="_blank"
                       rel="noreferrer"
-                      className="icon-btn"
-                      title={`Buka https://${host}`}
+                      className="route-link"
                     >
-                      <ExternalLink size={14} />
+                      <span>{host}</span>
+                      <ExternalLink size={12} style={{ opacity: 0.7 }} />
                     </a>
+                    <span className="route-arrow">➔</span>
+                    <span className="local-port">localhost:{p.port}</span>
                   </div>
+
+                  <div className="project-pills">
+                    {p.python_version ? <span className="pill">Python {p.python_version}</span> : null}
+                    {p.pid ? <span className="pill">PID {p.pid}</span> : null}
+                    <span className="pill">{p.source_type}</span>
+                    {p.run_command ? <span className="pill">{p.run_command}</span> : null}
+                  </div>
+                </div>
+
+                <div className="project-actions">
+                  {p.source_type === 'git' && (
+                    <button
+                      type="button"
+                      className="action-btn"
+                      title="Pull latest code from Git"
+                      disabled={actionLoadingId === p.id}
+                      onClick={() => handlePullGit(p)}
+                    >
+                      <Download size={14} className={actionLoadingId === p.id ? 'spin' : ''} />
+                    </button>
+                  )}
+
+                  {p.source_type === 'zip' && (
+                    <button
+                      type="button"
+                      className="action-btn"
+                      title="Upload updated ZIP file"
+                      onClick={() => setUpdatingZipProject(p)}
+                    >
+                      <Upload size={14} />
+                    </button>
+                  )}
 
                   <button
                     type="button"
-                    className="icon-btn"
-                    style={{ color: '#ef4444' }}
-                    title="Hapus project"
+                    className="action-btn"
+                    title="Edit project settings"
+                    onClick={() => openEditModal(p)}
+                  >
+                    <Settings size={14} />
+                  </button>
+
+                  {p.source_type !== 'tunnel' && (
+                    <>
+                      {p.status === 'running' ? (
+                        <button
+                          type="button"
+                          className="action-btn"
+                          title="Stop process"
+                          onClick={() => handleStop(p)}
+                        >
+                          <Square size={13} />
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="action-btn"
+                          title="Start process"
+                          onClick={() => handleStart(p)}
+                        >
+                          <Play size={13} />
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        className="action-btn"
+                        title="Restart service"
+                        onClick={() => handleRestart(p)}
+                      >
+                        <RotateCw size={13} />
+                      </button>
+
+                      <button
+                        type="button"
+                        className="action-btn"
+                        title="View streaming terminal logs"
+                        onClick={() => setSelectedProject(p)}
+                      >
+                        <Terminal size={13} />
+                      </button>
+                    </>
+                  )}
+
+                  <button
+                    type="button"
+                    className="action-btn"
+                    title="Copy public URL"
+                    onClick={() => copyToClipboard(fullUrl, p.id)}
+                  >
+                    {copiedId === p.id ? <Check size={13} style={{ color: 'var(--status-green)' }} /> : <Copy size={13} />}
+                  </button>
+
+                  <button
+                    type="button"
+                    className="action-btn danger"
+                    title="Delete project"
                     onClick={() => handleDelete(p)}
                   >
-                    <Trash2 size={14} />
+                    <Trash2 size={13} />
                   </button>
                 </div>
               </div>
@@ -565,39 +701,34 @@ export default function App() {
         <div className="modal-backdrop">
           <div className="modal-content">
             <div className="modal-header">
-              <div>
-                <h2 className="modal-title">Deploy Project Python & Cloudflare Route</h2>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-dim)' }}>
-                  Arahkan request dari domain Cloudflare langsung ke localhost:[port]
-                </div>
-              </div>
+              <h2 className="modal-title">Deploy New Project</h2>
               <button
                 type="button"
-                className="icon-btn"
+                className="action-btn"
                 onClick={() => setIsNewModalOpen(false)}
               >
-                <X size={18} />
+                <X size={14} />
               </button>
             </div>
 
             <form onSubmit={handleDeploy} className="modal-body">
               <div className="form-group">
-                <label className="form-label">Tipe Sumber Project</label>
+                <label className="form-label">Deployment Type</label>
                 <div className="tab-selector">
                   <button
                     type="button"
                     className={`tab-btn ${sourceType === 'git' ? 'active' : ''}`}
                     onClick={() => setSourceType('git')}
                   >
-                    <FolderGit2 size={14} style={{ display: 'inline', marginRight: '6px' }} />
-                    Git Repo
+                    <FolderGit2 size={13} style={{ display: 'inline', marginRight: 5 }} />
+                    Git Repository
                   </button>
                   <button
                     type="button"
                     className={`tab-btn ${sourceType === 'zip' ? 'active' : ''}`}
                     onClick={() => setSourceType('zip')}
                   >
-                    <FileArchive size={14} style={{ display: 'inline', marginRight: '6px' }} />
+                    <FileArchive size={13} style={{ display: 'inline', marginRight: 5 }} />
                     Upload ZIP
                   </button>
                   <button
@@ -605,17 +736,17 @@ export default function App() {
                     className={`tab-btn ${sourceType === 'tunnel' ? 'active' : ''}`}
                     onClick={() => setSourceType('tunnel')}
                   >
-                    <Radio size={14} style={{ display: 'inline', marginRight: '6px' }} />
-                    Port Service Saja
+                    <Radio size={13} style={{ display: 'inline', marginRight: 5 }} />
+                    Port Forward Only
                   </button>
                 </div>
               </div>
 
               <div className="form-group">
-                <label className="form-label">Nama Project</label>
+                <label className="form-label">Project Name</label>
                 <input
                   type="text"
-                  placeholder="Contoh: my-fastapi-service"
+                  placeholder="ali-audio"
                   value={projectName}
                   onChange={(e) => handleNameChange(e.target.value)}
                   required
@@ -623,32 +754,30 @@ export default function App() {
                 />
               </div>
 
-              <div className="form-group" style={{ background: 'rgba(59, 130, 246, 0.05)', padding: '0.75rem', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(59, 130, 246, 0.2)' }}>
-                <label className="form-label" style={{ color: 'var(--primary)', fontWeight: 600 }}>
-                  Port apa yang kamu pakai untuk project ini? (Localhost Port)
-                </label>
+              <div className="form-group">
+                <label className="form-label">Localhost Port (Target Port)</label>
                 <input
                   type="number"
                   placeholder="8000"
                   value={projectPort}
                   onChange={(e) => setProjectPort(e.target.value === '' ? '' : parseInt(e.target.value, 10))}
-                  style={{ fontSize: '1.05rem', fontWeight: 600 }}
                   required
                 />
-                <span className="form-help">
-                  Port tempat aplikasi Python Anda berjalan (misal: <code>8000</code>, <code>5000</code>, <code>3000</code>).
-                </span>
+                <span className="form-help">Port where your application listens on localhost.</span>
               </div>
 
               <div className="form-group">
-                <label className="form-label">Nama Subdomain</label>
+                <label className="form-label">Subdomain Name</label>
                 <input
                   type="text"
-                  placeholder="Contoh: api"
+                  placeholder="aliaudio"
                   value={projectSubdomain}
                   onChange={(e) => setProjectSubdomain(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-'))}
                   required
                 />
+                <span className="form-help">
+                  Route: <code>localhost:{projectPort || 8000} ➔ {getPublicHost(projectSubdomain || 'subdomain')}</code>
+                </span>
               </div>
 
               {sourceType === 'git' && (
@@ -657,7 +786,7 @@ export default function App() {
                     <label className="form-label">Git Repository URL</label>
                     <input
                       type="url"
-                      placeholder="https://github.com/username/my-python-app"
+                      placeholder="https://github.com/username/project"
                       value={gitURL}
                       onChange={(e) => setGitURL(e.target.value)}
                       required
@@ -665,7 +794,7 @@ export default function App() {
                   </div>
 
                   <div className="form-group">
-                    <label className="form-label">Branch (Opsional)</label>
+                    <label className="form-label">Git Branch (Optional)</label>
                     <input
                       type="text"
                       placeholder="main"
@@ -678,7 +807,7 @@ export default function App() {
 
               {sourceType === 'zip' && (
                 <div className="form-group">
-                  <label className="form-label">Pilih File ZIP</label>
+                  <label className="form-label">Select Project ZIP</label>
                   <input
                     type="file"
                     accept=".zip"
@@ -691,7 +820,7 @@ export default function App() {
               {sourceType !== 'tunnel' && (
                 <>
                   <div className="form-group">
-                    <label className="form-label">Versi Python (UV Toolchain)</label>
+                    <label className="form-label">Python Version (UV Toolchain)</label>
                     <select
                       value={pythonVersion}
                       onChange={(e) => setPythonVersion(e.target.value)}
@@ -699,7 +828,7 @@ export default function App() {
                       {systemStatus?.versions && systemStatus.versions.length > 0 ? (
                         systemStatus.versions.map((v) => (
                           <option key={v.raw_name} value={v.version}>
-                            Python {v.version} {v.is_installed ? '(Installed)' : '(UV Auto-download)'}
+                            Python {v.version} {v.is_installed ? '(Installed)' : '(Downloadable)'}
                           </option>
                         ))
                       ) : (
@@ -708,7 +837,6 @@ export default function App() {
                           <option value="3.13">Python 3.13</option>
                           <option value="3.12">Python 3.12</option>
                           <option value="3.11">Python 3.11</option>
-                          <option value="3.10">Python 3.10</option>
                         </>
                       )}
                     </select>
@@ -723,7 +851,6 @@ export default function App() {
                       onChange={(e) => setRunCommand(e.target.value)}
                       required
                     />
-                    <span className="form-help">Command untuk menjalankan script. Gunakan $PORT jika dinamis.</span>
                   </div>
 
                   <div className="form-group">
@@ -741,15 +868,15 @@ export default function App() {
                       <label className="form-label">Environment Variables</label>
                       <button
                         type="button"
-                        className="icon-btn"
+                        className="btn-secondary"
                         onClick={() => setEnvVars([...envVars, { key: '', value: '' }])}
-                        style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem' }}
+                        style={{ fontSize: '0.72rem', padding: '0.2rem 0.5rem' }}
                       >
-                        + Tambah Variable
+                        + Add Variable
                       </button>
                     </div>
                     {envVars.map((item, idx) => (
-                      <div key={idx} className="env-row" style={{ marginTop: '0.3rem' }}>
+                      <div key={idx} className="env-row">
                         <input
                           type="text"
                           placeholder="KEY"
@@ -774,12 +901,10 @@ export default function App() {
                         />
                         <button
                           type="button"
-                          className="icon-btn"
-                          onClick={() => {
-                            setEnvVars(envVars.filter((_, i) => i !== idx))
-                          }}
+                          className="action-btn"
+                          onClick={() => setEnvVars(envVars.filter((_, i) => i !== idx))}
                         >
-                          <X size={14} />
+                          <X size={12} />
                         </button>
                       </div>
                     ))}
@@ -787,35 +912,13 @@ export default function App() {
                 </>
               )}
 
-              <div style={{
-                background: 'rgba(255, 255, 255, 0.03)',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-sm)',
-                padding: '0.85rem'
-              }}>
-                <div style={{ color: 'var(--text-dim)', fontSize: '0.78rem', marginBottom: '0.35rem' }}>
-                  Cloudflare Tunnel Route yang akan dibuat otomatis via API:
-                </div>
-                <div style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.6rem',
-                  fontFamily: 'ui-monospace, monospace',
-                  fontSize: '0.9rem'
-                }}>
-                  <span style={{ color: '#34d399', fontWeight: 600 }}>localhost:{projectPort || 8000}</span>
-                  <ArrowRight size={14} style={{ color: 'var(--text-dim)' }} />
-                  <span style={{ color: '#60a5fa', fontWeight: 600 }}>{getPublicHost(projectSubdomain || 'subdomain')}</span>
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem', marginTop: '0.5rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '0.5rem' }}>
                 <button
                   type="button"
                   className="btn-secondary"
                   onClick={() => setIsNewModalOpen(false)}
                 >
-                  Batal
+                  Cancel
                 </button>
 
                 <button
@@ -823,7 +926,202 @@ export default function App() {
                   className="btn-primary"
                   disabled={isDeploying}
                 >
-                  {isDeploying ? 'Deploying & Creating Route...' : 'Deploy & Buat CF Route'}
+                  {isDeploying ? 'Deploying...' : 'Deploy Project'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {editingProject && (
+        <div className="modal-backdrop">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h2 className="modal-title">Edit Project: {editingProject.name}</h2>
+              <button
+                type="button"
+                className="action-btn"
+                onClick={() => setEditingProject(null)}
+              >
+                <X size={14} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEdit} className="modal-body">
+              <div className="form-group">
+                <label className="form-label">Project Name</label>
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Subdomain Name</label>
+                <input
+                  type="text"
+                  value={editSubdomain}
+                  onChange={(e) => setEditSubdomain(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-'))}
+                  required
+                />
+                <span className="form-help">
+                  Updating subdomain will automatically update the Cloudflare route.
+                </span>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Localhost Port</label>
+                <input
+                  type="number"
+                  value={editPort}
+                  onChange={(e) => setEditPort(e.target.value === '' ? '' : parseInt(e.target.value, 10))}
+                  required
+                />
+              </div>
+
+              {editingProject.source_type !== 'tunnel' && (
+                <>
+                  <div className="form-group">
+                    <label className="form-label">Run Command</label>
+                    <input
+                      type="text"
+                      value={editRunCommand}
+                      onChange={(e) => setEditRunCommand(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Requirements File</label>
+                    <input
+                      type="text"
+                      value={editRequirements}
+                      onChange={(e) => setEditRequirements(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <label className="form-label">Environment Variables</label>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => setEditEnvVars([...editEnvVars, { key: '', value: '' }])}
+                        style={{ fontSize: '0.72rem', padding: '0.2rem 0.5rem' }}
+                      >
+                        + Add Variable
+                      </button>
+                    </div>
+                    {editEnvVars.map((item, idx) => (
+                      <div key={idx} className="env-row">
+                        <input
+                          type="text"
+                          placeholder="KEY"
+                          value={item.key}
+                          onChange={(e) => {
+                            const next = [...editEnvVars]
+                            next[idx].key = e.target.value
+                            setEditEnvVars(next)
+                          }}
+                          style={{ flex: 1 }}
+                        />
+                        <input
+                          type="text"
+                          placeholder="VALUE"
+                          value={item.value}
+                          onChange={(e) => {
+                            const next = [...editEnvVars]
+                            next[idx].value = e.target.value
+                            setEditEnvVars(next)
+                          }}
+                          style={{ flex: 1 }}
+                        />
+                        <button
+                          type="button"
+                          className="action-btn"
+                          onClick={() => setEditEnvVars(editEnvVars.filter((_, i) => i !== idx))}
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '0.5rem' }}>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => setEditingProject(null)}
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  disabled={isSavingEdit}
+                >
+                  {isSavingEdit ? 'Saving...' : 'Save Changes'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {updatingZipProject && (
+        <div className="modal-backdrop">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h2 className="modal-title">Upload Updated ZIP Package: {updatingZipProject.name}</h2>
+              <button
+                type="button"
+                className="action-btn"
+                onClick={() => {
+                  setUpdatingZipProject(null)
+                  setNewZipUploadFile(null)
+                }}
+              >
+                <X size={14} />
+              </button>
+            </div>
+
+            <form onSubmit={handleUploadNewZip} className="modal-body">
+              <div className="form-group">
+                <label className="form-label">Select New ZIP Archive</label>
+                <input
+                  type="file"
+                  accept=".zip"
+                  onChange={(e) => setNewZipUploadFile(e.target.files?.[0] || null)}
+                  required
+                />
+                <span className="form-help">
+                  Files will be extracted into the project source directory, dependencies updated, and service restarted.
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '0.5rem' }}>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => {
+                    setUpdatingZipProject(null)
+                    setNewZipUploadFile(null)
+                  }}
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  disabled={isUploadingZip || !newZipUploadFile}
+                >
+                  {isUploadingZip ? 'Extracting & Restarting...' : 'Upload & Deploy'}
                 </button>
               </div>
             </form>
@@ -833,32 +1131,32 @@ export default function App() {
 
       {selectedProject && (
         <div className="modal-backdrop">
-          <div className="modal-content" style={{ maxWidth: '800px' }}>
+          <div className="modal-content" style={{ maxWidth: '780px' }}>
             <div className="modal-header">
               <div>
-                <h2 className="modal-title">{selectedProject.name} — Live Logs & Status</h2>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-dim)', marginTop: '0.2rem' }}>
-                  Port: {selectedProject.port} | Subdomain: {selectedProject.subdomain} | Status: {selectedProject.status}
+                <h2 className="modal-title">{selectedProject.name} — Logs & Terminal</h2>
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '0.15rem' }}>
+                  localhost:{selectedProject.port} ➔ {getPublicHost(selectedProject.subdomain)}
                 </div>
               </div>
               <button
                 type="button"
-                className="icon-btn"
+                className="action-btn"
                 onClick={() => setSelectedProject(null)}
               >
-                <X size={18} />
+                <X size={14} />
               </button>
             </div>
 
             <div className="modal-body">
-              <div style={{ display: 'flex', gap: '0.6rem', marginBottom: '0.5rem' }}>
+              <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.4rem' }}>
                 {selectedProject.status === 'running' ? (
                   <button
                     type="button"
                     className="btn-secondary"
                     onClick={() => handleStop(selectedProject)}
                   >
-                    <Square size={14} />
+                    <Square size={13} />
                     <span>Stop</span>
                   </button>
                 ) : (
@@ -867,7 +1165,7 @@ export default function App() {
                     className="btn-primary"
                     onClick={() => handleStart(selectedProject)}
                   >
-                    <Play size={14} />
+                    <Play size={13} />
                     <span>Start</span>
                   </button>
                 )}
@@ -877,18 +1175,20 @@ export default function App() {
                   className="btn-secondary"
                   onClick={() => handleRestart(selectedProject)}
                 >
-                  <RotateCw size={14} />
+                  <RotateCw size={13} />
                   <span>Restart</span>
                 </button>
 
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  onClick={() => handleRebuild(selectedProject)}
-                >
-                  <RefreshCw size={14} />
-                  <span>Rebuild Dependencies</span>
-                </button>
+                {selectedProject.source_type === 'git' && (
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => handlePullGit(selectedProject)}
+                  >
+                    <Download size={13} />
+                    <span>Git Pull</span>
+                  </button>
+                )}
 
                 <a
                   href={`https://${getPublicHost(selectedProject.subdomain)}`}
@@ -897,14 +1197,14 @@ export default function App() {
                   className="btn-secondary"
                   style={{ marginLeft: 'auto' }}
                 >
-                  <ExternalLink size={14} />
-                  <span>Buka URL</span>
+                  <ExternalLink size={13} />
+                  <span>Open URL</span>
                 </a>
               </div>
 
               <div className="terminal-box">
                 {projectLogs.length === 0 ? (
-                  <div style={{ color: 'var(--text-dim)' }}>Menunggu output log...</div>
+                  <div style={{ color: 'var(--text-muted)' }}>Waiting for terminal output...</div>
                 ) : (
                   projectLogs.map((line, idx) => <div key={idx}>{line}</div>)
                 )}
@@ -919,82 +1219,72 @@ export default function App() {
         <div className="modal-backdrop">
           <div className="modal-content">
             <div className="modal-header">
-              <h2 className="modal-title">Pengaturan Cloudflare Zero Trust API</h2>
+              <h2 className="modal-title">Cloudflare Zero Trust API Settings</h2>
               <button
                 type="button"
-                className="icon-btn"
+                className="action-btn"
                 onClick={() => setIsCFModalOpen(false)}
               >
-                <X size={18} />
+                <X size={14} />
               </button>
             </div>
 
             <form onSubmit={handleSaveCF} className="modal-body">
-              <div style={{ padding: '0.75rem', background: 'rgba(59, 130, 246, 0.08)', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(59, 130, 246, 0.2)' }}>
-                <div style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--primary)' }}>
-                  Cloudflare Zero Trust Automated Routing API
-                </div>
-                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                  Masukkan kredensial Cloudflare API agar setiap project yang dibuat otomatis mendaftarkan public hostname & CNAME DNS record di Cloudflare.
-                </div>
-              </div>
-
               <div className="form-group">
-                <label className="form-label">Cloudflare Root Domain</label>
+                <label className="form-label">Root Domain</label>
                 <input
                   type="text"
-                  placeholder="Contoh: octa.dev atau example.com"
+                  placeholder="oktanio.dev"
                   value={cfDomain}
                   onChange={(e) => setCfDomain(e.target.value)}
                   required
                 />
-                <span className="form-help">Domain yang terdaftar di akun Cloudflare Anda.</span>
+                <span className="form-help">Your apex domain registered on Cloudflare.</span>
               </div>
 
               <div className="form-group">
                 <label className="form-label">Cloudflare API Token (Bearer Token)</label>
                 <input
                   type="password"
-                  placeholder="Bearer token dengan izin Cloudflare Tunnel & DNS Edit"
+                  placeholder="Bearer token with Cloudflare Tunnel & DNS Edit permissions"
                   value={cfApiToken}
                   onChange={(e) => setCfApiToken(e.target.value)}
                 />
-                <span className="form-help">Dibuat di Cloudflare Dashboard &gt; My Profile &gt; API Tokens.</span>
+                <span className="form-help">Created in Cloudflare Dashboard &gt; My Profile &gt; API Tokens.</span>
               </div>
 
               <div className="form-group">
-                <label className="form-label">Cloudflare Account ID</label>
+                <label className="form-label">Account ID</label>
                 <input
                   type="text"
-                  placeholder="Account ID dari dashboard Cloudflare"
+                  placeholder="Account ID from Cloudflare sidebar"
                   value={cfAccountId}
                   onChange={(e) => setCfAccountId(e.target.value)}
                 />
               </div>
 
               <div className="form-group">
-                <label className="form-label">Cloudflare Tunnel ID (UUID)</label>
+                <label className="form-label">Tunnel ID (UUID)</label>
                 <input
                   type="text"
-                  placeholder="Contoh: c1744f8b-faa1-48a4-9e5c-02ac921467fa"
+                  placeholder="c1744f8b-faa1-48a4-9e5c-02ac921467fa"
                   value={cfTunnelId}
                   onChange={(e) => setCfTunnelId(e.target.value)}
                 />
-                <span className="form-help">ID Tunnel dari Zero Trust &gt; Networks &gt; Tunnels.</span>
+                <span className="form-help">UUID from Cloudflare Zero Trust &gt; Networks &gt; Tunnels.</span>
               </div>
 
               <div className="form-group">
-                <label className="form-label">Tunnel Token (Opsional untuk Daemon Lokal)</label>
+                <label className="form-label">Tunnel Token (Optional for Local cloudflared Daemon)</label>
                 <textarea
                   rows={2}
                   placeholder="eyJhIjoi..."
                   value={cfToken}
                   onChange={(e) => setCfToken(e.target.value)}
                 />
-                <span className="form-help">Jika ingin menjalankan daemon cloudflared di background server ini.</span>
               </div>
 
-              <div className="form-group" style={{ flexDirection: 'row', alignItems: 'center', gap: '0.6rem' }}>
+              <div className="form-group" style={{ flexDirection: 'row', alignItems: 'center', gap: '0.5rem' }}>
                 <input
                   type="checkbox"
                   id="cf-enable-cb"
@@ -1002,24 +1292,24 @@ export default function App() {
                   onChange={(e) => setCfActive(e.target.checked)}
                 />
                 <label htmlFor="cf-enable-cb" className="form-label" style={{ cursor: 'pointer', margin: 0 }}>
-                  Aktifkan daemon cloudflared lokal
+                  Run local cloudflared daemon in background
                 </label>
               </div>
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem', marginTop: '1rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '0.5rem' }}>
                 <button
                   type="button"
                   className="btn-secondary"
                   onClick={() => setIsCFModalOpen(false)}
                 >
-                  Batal
+                  Cancel
                 </button>
                 <button
                   type="submit"
                   className="btn-primary"
                   disabled={isSavingCF}
                 >
-                  {isSavingCF ? 'Menyimpan...' : 'Simpan Pengaturan Cloudflare'}
+                  {isSavingCF ? 'Saving...' : 'Save Settings'}
                 </button>
               </div>
             </form>
