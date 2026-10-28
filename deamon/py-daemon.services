@@ -1,0 +1,22 @@
+# Copyright (c) 2026 Yohanes Oktanio. All Rights Reserved.
+# Systemd service unit for PyDaemon server manager.
+[Unit]
+Description=PyDaemon - Python Serverless Daemon & Virtualhost Manager
+Documentation=https://github.com/octaoss/py-deamon
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/pyd
+ExecStart=/opt/pyd/bin/pyd
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=3s
+LimitNOFILE=65536
+StandardOutput=append:/opt/pyd/logs/pyd.log
+StandardError=append:/opt/pyd/logs/pyd.log
+
+[Install]
+WantedBy=multi-user.target

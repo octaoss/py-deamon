@@ -1,0 +1,8 @@
+# Copyright (c) 2026 Yohanes Oktanio. All Rights Reserved.
+# Git ignore rules for PyDaemon workspace.
+webs/node_modules/
+webs/dist/
+.env
+*.tmp
+*.log
+run/
